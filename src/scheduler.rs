@@ -1,0 +1,300 @@
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::backend::Backend;
+use crate::state::{Button, Settings, SharedState, Snapshot};
+
+const MAX_SLEEP_SLICE: Duration = Duration::from_millis(20);
+const MIN_PERIOD: Duration = Duration::from_millis(1);
+const MAX_PERIOD: Duration = Duration::from_secs(3600);
+const MIN_HOLD: Duration = Duration::from_micros(100);
+const RELEASE_GAP: Duration = Duration::from_micros(200);
+
+#[cfg(target_os = "linux")]
+const SPIN_MARGIN: Duration = Duration::from_micros(200);
+
+#[cfg(windows)]
+const SPIN_MARGIN: Duration = Duration::from_millis(1);
+
+#[cfg(not(any(target_os = "linux", windows)))]
+const SPIN_MARGIN: Duration = Duration::from_millis(1);
+
+pub fn run(shared: Arc<SharedState>, mut backend: Box<dyn Backend>) {
+    let mut rng = Rng::new();
+
+    loop {
+        let snapshot = shared.snapshot();
+        if snapshot.quit {
+            break;
+        }
+        if !snapshot.enabled {
+            shared.wait_for_change(snapshot.version);
+            continue;
+        }
+        click_series(&shared, backend.as_mut(), snapshot, &mut rng);
+    }
+}
+
+fn click_series(shared: &SharedState, backend: &mut dyn Backend, initial: Snapshot, rng: &mut Rng) {
+    let mut deadline = Instant::now();
+    let mut held: Option<Button> = None;
+
+    loop {
+        let snapshot = shared.snapshot();
+        if !snapshot.enabled || snapshot.quit || snapshot.version != initial.version {
+            break;
+        }
+
+        let period = jittered_period(snapshot.settings, rng);
+        let hold = clamp_hold(snapshot.settings.hold, period);
+
+        if !sleep_until(deadline, shared, initial.version) {
+            break;
+        }
+
+        let button = snapshot.settings.button;
+        if let Err(error) = backend.press(button) {
+            shared.set_error(format!("press failed: {error:#}"));
+            shared.off();
+            break;
+        }
+        held = Some(button);
+
+        // Even when the stop flag interrupts the hold, the button is released below.
+        let completed = sleep_until(deadline + hold, shared, initial.version);
+        if let Err(error) = backend.release(button) {
+            shared.set_error(format!("release failed: {error:#}"));
+            shared.off();
+            break;
+        }
+        held = None;
+        shared.record_click();
+
+        if !completed {
+            break;
+        }
+
+        deadline += period;
+        if deadline <= Instant::now() {
+            deadline = Instant::now();
+        }
+    }
+
+    if let Some(button) = held {
+        let _ = backend.release(button);
+    }
+}
+
+fn jittered_period(settings: Settings, rng: &mut Rng) -> Duration {
+    let base = 1.0 / settings.cps;
+    let jitter = if settings.jitter_pct > 0.0 {
+        (rng.next_f64() * 2.0 - 1.0) * settings.jitter_pct / 100.0
+    } else {
+        0.0
+    };
+
+    // A 100% jitter may not collapse the interval to zero and turn the
+    // autoclicker into a burst generator.
+    let factor = (1.0 + jitter).max(0.1);
+    Duration::from_secs_f64(base * factor).clamp(MIN_PERIOD, MAX_PERIOD)
+}
+
+fn clamp_hold(requested: Duration, period: Duration) -> Duration {
+    let max_hold = period.saturating_sub(RELEASE_GAP);
+    requested
+        .min(max_hold)
+        .max(MIN_HOLD)
+        .min(period.max(MIN_HOLD))
+}
+
+fn sleep_until(deadline: Instant, shared: &SharedState, version: u64) -> bool {
+    loop {
+        if shared.should_stop(version) {
+            return false;
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
+        }
+
+        let remaining = deadline - now;
+        if remaining > SPIN_MARGIN {
+            let sleep_for = (remaining - SPIN_MARGIN).min(MAX_SLEEP_SLICE);
+            if sleep_for >= Duration::from_micros(50) {
+                thread::sleep(sleep_for);
+            } else {
+                std::hint::spin_loop();
+            }
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+}
+
+struct Rng(u64);
+
+impl Rng {
+    fn new() -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos() as u64)
+            .unwrap_or(0);
+        let seed = nanos ^ (std::process::id() as u64).rotate_left(32) ^ 0x9E37_79B9_7F4A_7C15;
+        Self(if seed == 0 { 1 } else { seed })
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut value = self.0;
+        value ^= value >> 12;
+        value ^= value << 25;
+        value ^= value >> 27;
+        self.0 = value;
+        value.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct MockBackend {
+        presses: Arc<AtomicUsize>,
+        releases: Arc<AtomicUsize>,
+        down: bool,
+    }
+
+    impl MockBackend {
+        fn new() -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+            let presses = Arc::new(AtomicUsize::new(0));
+            let releases = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    presses: presses.clone(),
+                    releases: releases.clone(),
+                    down: false,
+                },
+                presses,
+                releases,
+            )
+        }
+    }
+
+    impl Backend for MockBackend {
+        fn press(&mut self, _button: Button) -> anyhow::Result<()> {
+            assert!(!self.down, "press while the button is already down");
+            self.down = true;
+            self.presses.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn release(&mut self, _button: Button) -> anyhow::Result<()> {
+            assert!(self.down, "release without a matching press");
+            self.down = false;
+            self.releases.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn spawn_clicker(
+        settings: Settings,
+    ) -> (
+        Arc<SharedState>,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        thread::JoinHandle<()>,
+    ) {
+        let shared = Arc::new(SharedState::new(settings, true));
+        let (backend, presses, releases) = MockBackend::new();
+        let thread_shared = shared.clone();
+        let handle = thread::spawn(move || run(thread_shared, Box::new(backend)));
+        (shared, presses, releases, handle)
+    }
+
+    #[test]
+    fn hold_never_exceeds_the_period() {
+        let period = Duration::from_millis(1);
+        let hold = clamp_hold(Duration::from_millis(10), period);
+        assert!(hold < period);
+        assert!(hold >= MIN_HOLD);
+    }
+
+    #[test]
+    fn jitter_stays_inside_the_requested_band() {
+        let settings = Settings::new(50.0, Button::Left, 10.0, 25.0).unwrap();
+        let mut rng = Rng::new();
+        let nominal = 1.0 / settings.cps;
+        for _ in 0..10_000 {
+            let period = jittered_period(settings, &mut rng).as_secs_f64();
+            assert!(period >= nominal * 0.75 - 1e-9);
+            assert!(period <= nominal * 1.25 + 1e-9);
+        }
+    }
+
+    #[test]
+    fn extreme_jitter_does_not_collapse_the_period() {
+        let settings = Settings::new(50.0, Button::Left, 10.0, 100.0).unwrap();
+        let mut rng = Rng::new();
+        let nominal = 1.0 / settings.cps;
+        for _ in 0..10_000 {
+            let period = jittered_period(settings, &mut rng).as_secs_f64();
+            assert!(period >= nominal * 0.1 - 1e-9);
+            assert!(period <= nominal * 2.0 + 1e-9);
+        }
+    }
+
+    #[test]
+    fn presses_and_releases_are_paired() {
+        let settings = Settings::new(200.0, Button::Left, 1.0, 0.0).unwrap();
+        let (shared, presses, releases, handle) = spawn_clicker(settings);
+
+        thread::sleep(Duration::from_millis(150));
+        shared.quit();
+        handle.join().unwrap();
+
+        let presses = presses.load(Ordering::SeqCst);
+        let releases = releases.load(Ordering::SeqCst);
+        assert!(presses >= 10, "expected several clicks, got {presses}");
+        assert_eq!(presses, releases);
+    }
+
+    #[test]
+    fn stopping_during_a_hold_releases_the_button() {
+        let settings = Settings::new(1.0, Button::Left, 400.0, 0.0).unwrap();
+        let (shared, presses, releases, handle) = spawn_clicker(settings);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while presses.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(presses.load(Ordering::SeqCst) >= 1);
+
+        thread::sleep(Duration::from_millis(20));
+        let stopped_at = Instant::now();
+        shared.off();
+
+        let release_deadline = Instant::now() + Duration::from_secs(1);
+        while releases.load(Ordering::SeqCst) == 0 && Instant::now() < release_deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        let presses = presses.load(Ordering::SeqCst);
+        let releases = releases.load(Ordering::SeqCst);
+        assert_eq!(presses, releases);
+        assert!(
+            stopped_at.elapsed() < Duration::from_millis(250),
+            "release took {:?}",
+            stopped_at.elapsed()
+        );
+
+        shared.quit();
+        handle.join().unwrap();
+    }
+}

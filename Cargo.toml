@@ -1,0 +1,54 @@
+[package]
+name = "autoclicker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:serde", "dep:toml"]
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+ctrlc = "3.5.2"
+eframe = { version = "0.37.0", optional = true, default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+fs2 = "0.4.3"
+interprocess = "2.4.7"
+serde = { version = "1.0", features = ["derive"], optional = true }
+toml = { version = "1.1", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13.2"
+libc = "0.2.191"
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Media",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[[bin]]
+name = "autoclicker"
+path = "src/main.rs"
+
+[[bin]]
+name = "autoclicker-gui"
+path = "src/bin/autoclicker-gui.rs"
+required-features = ["gui"]
+
+[lib]
+name = "autoclicker"
+path = "src/lib.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
