@@ -5,11 +5,13 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::hotkey::{DEFAULT as DEFAULT_HOTKEY, Hotkey};
 use crate::state::{Button, Settings};
 
 #[derive(Clone, Debug)]
 pub struct Loaded {
     pub settings: Settings,
+    pub hotkey: String,
     pub warning: Option<String>,
 }
 
@@ -19,17 +21,24 @@ struct PersistedSettings {
     button: String,
     hold_ms: f64,
     jitter_pct: f64,
+    #[serde(default = "default_hotkey")]
+    hotkey: String,
 }
 
-impl From<&Settings> for PersistedSettings {
-    fn from(settings: &Settings) -> Self {
+impl PersistedSettings {
+    fn new(settings: &Settings, hotkey: &str) -> Self {
         Self {
             cps: settings.cps,
             button: settings.button.to_string(),
             hold_ms: settings.hold_ms(),
             jitter_pct: settings.jitter_pct,
+            hotkey: hotkey.to_string(),
         }
     }
+}
+
+fn default_hotkey() -> String {
+    DEFAULT_HOTKEY.to_string()
 }
 
 pub fn load() -> Loaded {
@@ -38,19 +47,33 @@ pub fn load() -> Loaded {
         Err(error) => {
             return Loaded {
                 settings: Settings::default(),
+                hotkey: default_hotkey(),
                 warning: Some(format!("Не удалось определить путь к конфигу: {error:#}")),
             };
         }
     };
 
     match fs::read_to_string(&path) {
-        Ok(text) => match parse(&text) {
-            Ok(settings) => Loaded {
-                settings,
-                warning: None,
+        Ok(text) => match parse_document(&text) {
+            Ok((settings, raw_hotkey)) => match Hotkey::parse(&raw_hotkey) {
+                Ok(hotkey) => Loaded {
+                    settings,
+                    hotkey: hotkey.to_string(),
+                    warning: None,
+                },
+                Err(error) => Loaded {
+                    settings,
+                    hotkey: default_hotkey(),
+                    warning: Some(format!(
+                        "Некорректная горячая клавиша в {}: {error:#}. Используется {}.",
+                        path.display(),
+                        DEFAULT_HOTKEY
+                    )),
+                },
             },
             Err(error) => Loaded {
                 settings: Settings::default(),
+                hotkey: default_hotkey(),
                 warning: Some(format!(
                     "Не удалось прочитать {}: {error:#}. Используются значения по умолчанию.",
                     path.display()
@@ -59,10 +82,12 @@ pub fn load() -> Loaded {
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Loaded {
             settings: Settings::default(),
+            hotkey: default_hotkey(),
             warning: None,
         },
         Err(error) => Loaded {
             settings: Settings::default(),
+            hotkey: default_hotkey(),
             warning: Some(format!(
                 "Не удалось прочитать {}: {error}. Используются значения по умолчанию.",
                 path.display()
@@ -71,33 +96,40 @@ pub fn load() -> Loaded {
     }
 }
 
-pub fn save(settings: &Settings) -> Result<()> {
+pub fn save(settings: &Settings, hotkey: &str) -> Result<()> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    let text = serialize(settings)?;
+    let text = serialize(settings, hotkey)?;
     fs::write(&path, text).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
+#[cfg(test)]
 pub fn parse(text: &str) -> Result<Settings> {
+    Ok(parse_document(text)?.0)
+}
+
+fn parse_document(text: &str) -> Result<(Settings, String)> {
     let persisted: PersistedSettings =
         toml::from_str(text).context("invalid TOML configuration")?;
     let button = persisted.button.parse::<Button>()?;
 
-    Settings::new(
+    let settings = Settings::new(
         persisted.cps,
         button,
         persisted.hold_ms,
         persisted.jitter_pct,
-    )
+    )?;
+
+    Ok((settings, persisted.hotkey))
 }
 
-pub fn serialize(settings: &Settings) -> Result<String> {
-    toml::to_string_pretty(&PersistedSettings::from(settings))
+pub fn serialize(settings: &Settings, hotkey: &str) -> Result<String> {
+    toml::to_string_pretty(&PersistedSettings::new(settings, hotkey))
         .context("failed to serialize GUI settings")
 }
 
@@ -132,9 +164,17 @@ mod tests {
     #[test]
     fn settings_round_trip_through_toml() {
         let settings = Settings::new(123.456, Button::Middle, 7.25, 33.5).unwrap();
-        let text = serialize(&settings).unwrap();
-        let parsed = parse(&text).unwrap();
+        let text = serialize(&settings, "ctrl+shift+f8").unwrap();
+        let (parsed, hotkey) = parse_document(&text).unwrap();
         assert_eq!(parsed, settings);
+        assert_eq!(hotkey, "ctrl+shift+f8");
+    }
+
+    #[test]
+    fn missing_hotkey_uses_the_default() {
+        let (_, hotkey) =
+            parse_document("cps = 50\nbutton = \"left\"\nhold_ms = 10\njitter_pct = 0\n").unwrap();
+        assert_eq!(hotkey, DEFAULT_HOTKEY);
     }
 
     #[test]

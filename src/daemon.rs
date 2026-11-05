@@ -79,7 +79,16 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     let _timer = platform::timer_resolution();
     let backend = backend::create()?;
     let shared = Arc::new(SharedState::new(Settings::default(), false));
+    shared.set_hotkey(args.hotkey.clone());
     let listener = ipc::create_listener().context("failed to create the control socket")?;
+
+    #[cfg(windows)]
+    {
+        match backend::win::spawn_hotkey(shared.clone(), hotkey) {
+            Ok(()) => eprintln!("autoclicker: daemon ready, global hotkey: {}", args.hotkey),
+            Err(error) => eprintln!("autoclicker: warning: {error:#}"),
+        }
+    }
 
     let scheduler_shared = shared.clone();
     let scheduler_thread = thread::Builder::new()
@@ -95,19 +104,10 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
 
     install_ctrlc(shared.clone(), false)?;
 
-    #[cfg(windows)]
-    {
-        match backend::win::spawn_hotkey(shared.clone(), hotkey) {
-            Ok(()) => eprintln!("autoclicker: daemon ready, global hotkey: {}", args.hotkey),
-            Err(error) => eprintln!("autoclicker: warning: {error:#}"),
-        }
-    }
-
     #[cfg(not(windows))]
     {
-        let _ = &args.hotkey;
         eprintln!(
-            "autoclicker: daemon ready; bind `autoclicker toggle` to a compositor shortcut (niri: Mod+Shift+C)"
+            "autoclicker: daemon ready; bind `autoclicker toggle` to a compositor shortcut (niri: Mod+Shift+C). --hotkey is ignored on Linux"
         );
     }
 

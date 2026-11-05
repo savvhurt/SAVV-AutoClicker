@@ -76,12 +76,20 @@ pub fn ensure_ok(response: &str) -> Result<()> {
 }
 
 pub fn send_or_spawn(command: &str) -> Result<String> {
+    send_or_spawn_with_hotkey(command, crate::hotkey::DEFAULT)
+}
+
+pub fn send_or_spawn_with_hotkey(command: &str, hotkey: &str) -> Result<String> {
     if let Ok(response) = send(command) {
         return Ok(response);
     }
 
-    platform::spawn_daemon(&[String::from("daemon")])
-        .context("failed to start the autoclicker daemon")?;
+    let args = vec![
+        String::from("daemon"),
+        String::from("--hotkey"),
+        hotkey.to_string(),
+    ];
+    platform::spawn_daemon(&args).context("failed to start the autoclicker daemon")?;
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut last_error = None;
@@ -168,6 +176,7 @@ fn process(line: &str, shared: &SharedState) -> String {
         "TOGGLE" => format!("OK enabled={}\n", shared.toggle()),
         "ON" => handle_on(parts, shared),
         "SET" => handle_set(parts, shared),
+        "HOTKEY" => handle_hotkey(parts, shared),
         "OFF" => {
             shared.off();
             "OK\n".to_string()
@@ -195,6 +204,34 @@ fn handle_set(parts: std::str::SplitWhitespace<'_>, shared: &SharedState) -> Str
             "OK\n".to_string()
         }
         Err(error) => format!("ERR {error}\n"),
+    }
+}
+
+fn handle_hotkey(parts: std::str::SplitWhitespace<'_>, shared: &SharedState) -> String {
+    let combo = parts.collect::<Vec<_>>().join(" ");
+    if combo.is_empty() {
+        return "ERR HOTKEY requires: ctrl+alt+c\n".to_string();
+    }
+
+    let hotkey = match crate::hotkey::Hotkey::parse(&combo) {
+        Ok(hotkey) => hotkey,
+        Err(error) => return format!("ERR {error}\n"),
+    };
+    let canonical = hotkey.to_string();
+
+    #[cfg(windows)]
+    {
+        match crate::backend::win::request_hotkey(shared, &canonical) {
+            Ok(()) => "OK\n".to_string(),
+            Err(error) => format!("ERR {error:#}\n"),
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = hotkey;
+        shared.set_hotkey(canonical);
+        "OK\n".to_string()
     }
 }
 
@@ -316,6 +353,32 @@ mod tests {
         assert!(process("SET 50 left 10", &shared).starts_with("ERR "));
         assert!(process("SET 50 side 10 0", &shared).starts_with("ERR "));
         assert!(!shared.status().enabled);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn hotkey_command_canonicalizes_and_updates_state() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert_eq!(process("HOTKEY alt+control+space", &shared), "OK\n");
+        assert_eq!(shared.status().hotkey, "ctrl+alt+space");
+        assert_eq!(shared.status().hotkey_error, None);
+
+        assert_eq!(process("hotkey ctrl+shift+f8", &shared), "OK\n");
+        assert_eq!(shared.status().hotkey, "ctrl+shift+f8");
+    }
+
+    #[test]
+    fn invalid_hotkey_is_rejected_without_changing_state() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        let response = process("HOTKEY c", &shared);
+        assert!(response.starts_with("ERR "));
+        assert_eq!(shared.status().hotkey, crate::hotkey::DEFAULT);
+
+        let response = process("HOTKEY", &shared);
+        assert!(response.starts_with("ERR "));
+        assert_eq!(shared.status().hotkey, crate::hotkey::DEFAULT);
     }
 
     #[test]

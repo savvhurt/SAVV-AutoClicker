@@ -115,12 +115,14 @@ pub struct Snapshot {
     pub version: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Status {
     pub enabled: bool,
     pub settings: Settings,
     pub actual_cps: f64,
     pub clicks: u64,
+    pub hotkey: String,
+    pub hotkey_error: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -131,9 +133,15 @@ impl Status {
             .as_deref()
             .unwrap_or("none")
             .replace(['\n', '\r'], " ");
+        let hotkey = self.hotkey.replace(['\n', '\r'], " ");
+        let hotkey_error = self
+            .hotkey_error
+            .as_deref()
+            .unwrap_or("none")
+            .replace(['\n', '\r'], " ");
 
         format!(
-            "OK\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nactual_cps: {:.1}\nclicks: {}\nerror: {}\n",
+            "OK\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nactual_cps: {:.1}\nclicks: {}\nhotkey: {}\nhotkey_error: {}\nerror: {}\n",
             self.enabled,
             format_number(self.settings.cps),
             self.settings.button,
@@ -141,6 +149,8 @@ impl Status {
             format_number(self.settings.jitter_pct),
             self.actual_cps,
             self.clicks,
+            hotkey,
+            hotkey_error,
             error
         )
     }
@@ -164,6 +174,8 @@ impl Status {
         let mut jitter_pct = None;
         let mut actual_cps = None;
         let mut clicks = None;
+        let mut hotkey = None;
+        let mut hotkey_error = None;
         let mut last_error = None;
 
         for line in body.lines() {
@@ -180,6 +192,14 @@ impl Status {
                 "jitter_pct" => jitter_pct = Some(value.parse::<f64>()?),
                 "actual_cps" => actual_cps = Some(value.parse::<f64>()?),
                 "clicks" => clicks = Some(value.parse::<u64>()?),
+                "hotkey" => hotkey = Some(value.to_string()),
+                "hotkey_error" => {
+                    hotkey_error = if value.is_empty() || value.eq_ignore_ascii_case("none") {
+                        None
+                    } else {
+                        Some(value.to_string())
+                    };
+                }
                 "error" => {
                     last_error = if value.is_empty() || value.eq_ignore_ascii_case("none") {
                         None
@@ -204,6 +224,8 @@ impl Status {
             actual_cps: actual_cps
                 .ok_or_else(|| anyhow::anyhow!("status is missing `actual_cps`"))?,
             clicks: clicks.ok_or_else(|| anyhow::anyhow!("status is missing `clicks`"))?,
+            hotkey: hotkey.unwrap_or_default(),
+            hotkey_error,
             last_error,
         })
     }
@@ -216,6 +238,9 @@ struct Inner {
     version: u64,
     clicks: u64,
     click_times: VecDeque<Instant>,
+    hotkey: String,
+    hotkey_error: Option<String>,
+    hotkey_reload: bool,
     last_error: Option<String>,
 }
 
@@ -234,6 +259,9 @@ impl SharedState {
                 version: 0,
                 clicks: 0,
                 click_times: VecDeque::new(),
+                hotkey: crate::hotkey::DEFAULT.to_string(),
+                hotkey_error: None,
+                hotkey_reload: false,
                 last_error: None,
             }),
             changed: Condvar::new(),
@@ -350,6 +378,38 @@ impl SharedState {
         self.inner.lock().unwrap().last_error = Some(message.into());
     }
 
+    pub fn set_hotkey(&self, value: impl Into<String>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.hotkey = value.into();
+        inner.hotkey_error = None;
+        inner.hotkey_reload = false;
+    }
+
+    pub fn request_hotkey(&self, value: impl Into<String>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.hotkey = value.into();
+        inner.hotkey_error = None;
+        inner.hotkey_reload = true;
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn take_hotkey_request(&self) -> Option<String> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.hotkey_reload {
+            return None;
+        }
+        inner.hotkey_reload = false;
+        Some(inner.hotkey.clone())
+    }
+
+    pub fn set_hotkey_error(&self, message: impl Into<String>) {
+        self.inner.lock().unwrap().hotkey_error = Some(message.into());
+    }
+
+    pub fn clear_hotkey_error(&self) {
+        self.inner.lock().unwrap().hotkey_error = None;
+    }
+
     pub fn total_clicks(&self) -> u64 {
         self.inner.lock().unwrap().clicks
     }
@@ -375,6 +435,8 @@ impl SharedState {
                 0.0
             },
             clicks: inner.clicks,
+            hotkey: inner.hotkey.clone(),
+            hotkey_error: inner.hotkey_error.clone(),
             last_error: inner.last_error.clone(),
         }
     }
@@ -422,6 +484,8 @@ mod tests {
             settings: Settings::new(123.456, Button::Middle, 7.25, 33.5).unwrap(),
             actual_cps: 99.9,
             clicks: 42,
+            hotkey: "ctrl+alt+c".to_string(),
+            hotkey_error: Some("hotkey is already in use".to_string()),
             last_error: Some("press failed: permission denied".to_string()),
         };
 
@@ -431,6 +495,8 @@ mod tests {
         assert_eq!(parsed.settings, status.settings);
         assert_eq!(parsed.actual_cps, status.actual_cps);
         assert_eq!(parsed.clicks, status.clicks);
+        assert_eq!(parsed.hotkey, status.hotkey);
+        assert_eq!(parsed.hotkey_error, status.hotkey_error);
         assert_eq!(parsed.last_error, status.last_error);
     }
 

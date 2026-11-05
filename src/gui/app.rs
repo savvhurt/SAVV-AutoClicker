@@ -1,10 +1,11 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{
+use egui::{
     self, Align, Color32, CornerRadius, Frame, Id, Layout, Margin, RichText, ScrollArea, Sense,
     Stroke, Ui, Vec2,
 };
+use egui_software_backend::{SoftwareBackend, SoftwareBackendAppConfiguration};
 
 use super::worker::{Command, Event, Worker};
 use super::{config, theme, widgets};
@@ -15,7 +16,9 @@ use crate::state::{Button, Settings, Status};
 const APPLY_DEBOUNCE: Duration = Duration::from_millis(250);
 const SYNC_GRACE: Duration = Duration::from_millis(800);
 const TOGGLE_TIMEOUT: Duration = Duration::from_secs(3);
-const CONTENT_WIDTH: f32 = 560.0;
+const CONTENT_WIDTH: f32 = 424.0;
+const WINDOW_SIZE: [f32; 2] = [460.0, 560.0];
+const MIN_WINDOW_SIZE: [f32; 2] = [420.0, 520.0];
 
 struct SliderSpec<'a> {
     title: &'a str,
@@ -55,11 +58,14 @@ impl DraftSettings {
 
 pub struct GuiApp {
     settings: DraftSettings,
+    hotkey: String,
+    recording_hotkey: bool,
     online: bool,
     enabled: bool,
     actual_cps: f64,
     clicks: u64,
     daemon_error: Option<String>,
+    daemon_hotkey_error: Option<String>,
     daemon_settings: Option<Settings>,
     notice: Option<String>,
     offline_reason: Option<String>,
@@ -73,19 +79,22 @@ pub struct GuiApp {
 }
 
 impl GuiApp {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        theme::install(&cc.egui_ctx);
+    fn new(ctx: egui::Context) -> Self {
+        theme::install(&ctx);
         let loaded = config::load();
-        let worker = Worker::spawn(cc.egui_ctx.clone())
+        let worker = Worker::spawn(ctx, loaded.hotkey.clone())
             .expect("failed to start the autoclicker GUI IPC worker");
 
         Self {
             settings: loaded.settings.into(),
+            hotkey: loaded.hotkey,
+            recording_hotkey: false,
             online: false,
             enabled: false,
             actual_cps: 0.0,
             clicks: 0,
             daemon_error: None,
+            daemon_hotkey_error: None,
             daemon_settings: None,
             notice: loaded.warning,
             offline_reason: None,
@@ -108,6 +117,7 @@ impl GuiApp {
                     self.enabled = false;
                     self.actual_cps = 0.0;
                     self.daemon_settings = None;
+                    self.daemon_hotkey_error = None;
                     self.offline_reason = Some(reason);
                     self.initialized = false;
                     self.last_apply_sent = None;
@@ -121,6 +131,7 @@ impl GuiApp {
                     self.enabled = false;
                     self.actual_cps = 0.0;
                     self.daemon_settings = None;
+                    self.daemon_hotkey_error = None;
                     self.offline_reason = None;
                     self.initialized = false;
                     self.last_apply_sent = None;
@@ -138,7 +149,9 @@ impl GuiApp {
             self.notice = Some("Демон не ответил на команду. Проверь его состояние.".to_string());
         }
 
-        ctx.request_repaint_after(Duration::from_millis(100));
+        if self.pending_toggle.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
     }
 
     fn apply_status(&mut self, status: Status) {
@@ -151,7 +164,13 @@ impl GuiApp {
         self.actual_cps = status.actual_cps;
         self.clicks = status.clicks;
         self.daemon_error = status.last_error.clone();
+        self.daemon_hotkey_error = status.hotkey_error.clone();
         self.daemon_settings = Some(status.settings);
+
+        #[cfg(windows)]
+        if !status.hotkey.is_empty() && status.hotkey != self.hotkey {
+            let _ = self.commands.send(Command::SetHotkey(self.hotkey.clone()));
+        }
 
         if first_status {
             if status.enabled {
@@ -215,8 +234,96 @@ impl GuiApp {
             }
         }
 
-        if let Err(error) = config::save(&settings) {
+        if let Err(error) = config::save(&settings, &self.hotkey) {
             self.notice = Some(format!("Не удалось сохранить настройки: {error:#}"));
+        }
+    }
+
+    fn set_hotkey(&mut self, combo: &str) {
+        let hotkey = match crate::hotkey::Hotkey::parse(combo) {
+            Ok(hotkey) => hotkey,
+            Err(error) => {
+                self.notice = Some(format!("Некорректная горячая клавиша: {error:#}"));
+                return;
+            }
+        };
+        let combo = hotkey.to_string();
+        if combo == self.hotkey && self.daemon_hotkey_error.is_none() {
+            self.recording_hotkey = false;
+            return;
+        }
+
+        self.hotkey = combo.clone();
+        self.recording_hotkey = false;
+        self.daemon_hotkey_error = None;
+        self.notice = None;
+        let _ = self.commands.send(Command::SetHotkey(combo));
+
+        if let Ok(settings) = self.settings.to_settings() {
+            if let Err(error) = config::save(&settings, &self.hotkey) {
+                self.notice = Some(format!("Не удалось сохранить настройки: {error:#}"));
+            }
+        }
+    }
+
+    fn capture_hotkey(&mut self, ctx: &egui::Context) {
+        if !self.recording_hotkey {
+            return;
+        }
+
+        let mut pressed = None;
+        ctx.input(|input| {
+            for event in &input.events {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    pressed = Some((*key, *modifiers));
+                    break;
+                }
+            }
+        });
+
+        let Some((key, modifiers)) = pressed else {
+            return;
+        };
+
+        if key == egui::Key::Escape && !modifiers.ctrl && !modifiers.alt && !modifiers.shift {
+            self.recording_hotkey = false;
+            self.notice = None;
+            return;
+        }
+
+        let mut combo = String::new();
+        for (enabled, name) in [
+            (modifiers.ctrl, "ctrl"),
+            (modifiers.alt, "alt"),
+            (modifiers.shift, "shift"),
+        ] {
+            if enabled {
+                if !combo.is_empty() {
+                    combo.push('+');
+                }
+                combo.push_str(name);
+            }
+        }
+
+        if !combo.is_empty() {
+            combo.push('+');
+        }
+        combo.push_str(&key.name().to_ascii_lowercase());
+
+        match crate::hotkey::Hotkey::parse(&combo) {
+            Ok(hotkey) => self.set_hotkey(&hotkey.to_string()),
+            Err(error) => {
+                self.notice = Some(format!(
+                    "{error:#}. Поддерживаются Ctrl, Alt, Shift и клавиши A-Z, 0-9, F1-F24, Space, Tab, Enter, Esc, Backspace."
+                ));
+            }
         }
     }
 
@@ -277,7 +384,7 @@ impl GuiApp {
 
             ui.label(
                 RichText::new("Autoclicker")
-                    .font(theme::sans_semibold(17.0))
+                    .font(theme::sans_semibold(16.0))
                     .color(theme::TEXT),
             );
 
@@ -295,51 +402,59 @@ impl GuiApp {
         let active = self.online && self.enabled;
         let pending = self.pending_toggle.map(|(start, _)| start);
 
-        ui.vertical_centered(|ui| {
-            ui.add_space(16.0);
-            let response = widgets::power_button(ui, active, pending.is_some());
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let response = widgets::power_button(ui, active, pending.is_some(), 68.0);
             if response.clicked() && pending.is_none() {
                 self.request_toggle(!active);
             }
 
             ui.add_space(12.0);
-            let (title, title_color) = match pending {
-                Some(true) => ("Запуск…", theme::MUTED),
-                Some(false) => ("Остановка…", theme::MUTED),
-                None if active => ("Клики идут", theme::TEXT),
-                None => ("Клики остановлены", theme::TEXT),
-            };
-            ui.label(
-                RichText::new(title)
-                    .font(theme::sans_semibold(28.0))
-                    .color(title_color),
-            );
+            let width = ui.available_width();
+            ui.allocate_ui_with_layout(
+                Vec2::new(width, 68.0),
+                Layout::top_down(Align::LEFT),
+                |ui| {
+                    ui.add_space(4.0);
+                    let (title, title_color) = match pending {
+                        Some(true) => ("Запуск…", theme::MUTED),
+                        Some(false) => ("Остановка…", theme::MUTED),
+                        None if active => ("Клики идут", theme::TEXT),
+                        None => ("Клики остановлены", theme::TEXT),
+                    };
+                    ui.label(
+                        RichText::new(title)
+                            .font(theme::sans_semibold(20.0))
+                            .color(title_color),
+                    );
 
-            ui.add_space(6.0);
-            let description = match pending {
-                Some(_) => "Ждём подтверждения от демона.",
-                None if active => "Импульсы уходят в текущую позицию курсора.",
-                None if !self.online => "Демон запустится автоматически.",
-                None => "Нажмите кнопку, чтобы начать.",
-            };
-            ui.add(
-                egui::Label::new(
-                    RichText::new(description)
-                        .font(theme::sans(11.5))
-                        .color(theme::MUTED),
-                )
-                .wrap(),
+                    ui.add_space(1.0);
+                    let description = match pending {
+                        Some(_) => "Ждём подтверждения от демона.",
+                        None if active => "Импульсы уходят в текущую позицию курсора.",
+                        None if !self.online => "Демон запустится автоматически.",
+                        None => "Нажмите кнопку, чтобы начать.",
+                    };
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(description)
+                                .font(theme::sans(10.5))
+                                .color(theme::MUTED),
+                        )
+                        .wrap(),
+                    );
+                },
             );
-
-            ui.add_space(20.0);
         });
+        ui.add_space(2.0);
     }
 
     fn draw_metrics(&self, ui: &mut Ui) {
         let period = 1000.0 / self.settings.cps.max(0.2);
 
         theme::rule(ui);
-        ui.add_space(8.0);
+        ui.add_space(2.0);
         ui.columns(3, |columns| {
             metric(
                 &mut columns[0],
@@ -350,7 +465,7 @@ impl GuiApp {
             metric(&mut columns[1], "КЛИКОВ", &group_digits(self.clicks), "ШТ");
             metric(&mut columns[2], "ЦИКЛ", &trim_number(period), "МС");
         });
-        ui.add_space(8.0);
+        ui.add_space(2.0);
         theme::rule(ui);
     }
 
@@ -358,22 +473,22 @@ impl GuiApp {
         let mut draft = self.settings;
         let mut changed = false;
 
-        ui.add_space(16.0);
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new("Параметры")
-                    .font(theme::sans_semibold(14.0))
+                    .font(theme::sans_semibold(12.5))
                     .color(theme::TEXT),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
                     RichText::new("АВТОСОХРАНЕНИЕ")
-                        .font(theme::mono(8.0))
+                        .font(theme::mono(7.5))
                         .color(theme::DIM),
                 );
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(2.0);
 
         changed |= slider_setting(
             ui,
@@ -428,14 +543,17 @@ impl GuiApp {
         let period_ms = 1000.0 / draft.cps.max(0.2);
         let effective_hold = draft.hold_ms.min((period_ms - 0.2).max(0.1));
         if draft.hold_ms > effective_hold + 0.001 {
-            ui.add_space(5.0);
-            ui.label(
-                RichText::new(format!(
-                    "Фактическое удержание: {} мс — частота не даёт удержать дольше.",
-                    trim_number(effective_hold)
-                ))
-                .font(theme::sans(10.0))
-                .color(theme::WARNING),
+            ui.add_space(3.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "Фактическое удержание: {} мс — частота не даёт удержать дольше.",
+                        trim_number(effective_hold)
+                    ))
+                    .font(theme::sans(9.5))
+                    .color(theme::WARNING),
+                )
+                .wrap(),
             );
         }
 
@@ -455,10 +573,110 @@ impl GuiApp {
             },
         );
 
+        settings_divider(ui);
+        self.draw_hotkey(ui);
+
         if changed {
             self.settings = draft;
             self.mark_dirty();
         }
+    }
+
+    #[cfg(windows)]
+    fn draw_hotkey(&mut self, ui: &mut Ui) {
+        let mut toggle_recording = false;
+
+        ui.horizontal(|ui| {
+            let response = ui.label(
+                RichText::new("Горячая клавиша")
+                    .font(theme::sans_medium(12.5))
+                    .color(theme::TEXT),
+            );
+            let _ = response.on_hover_text("Глобальное переключение кликов в Windows");
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let recording = self.recording_hotkey;
+                let label = if recording {
+                    "НАЖМИТЕ КОМБИНАЦИЮ".to_string()
+                } else {
+                    hotkey_label(&self.hotkey)
+                };
+                let text_color = if recording {
+                    theme::ACCENT
+                } else {
+                    theme::TEXT
+                };
+                let button = egui::Button::new(
+                    RichText::new(label)
+                        .font(theme::mono_medium(9.0))
+                        .color(text_color),
+                )
+                .fill(if recording {
+                    theme::alpha(theme::ACCENT, 10)
+                } else {
+                    theme::PANEL
+                })
+                .stroke(Stroke::new(
+                    1.0_f32,
+                    if recording {
+                        theme::ACCENT
+                    } else {
+                        theme::LINE
+                    },
+                ))
+                .corner_radius(CornerRadius::same(7))
+                .min_size(Vec2::new(0.0, 23.0));
+
+                if ui.add(button).clicked() {
+                    toggle_recording = true;
+                }
+            });
+        });
+
+        if toggle_recording {
+            self.recording_hotkey = !self.recording_hotkey;
+            if self.recording_hotkey {
+                ui.ctx().memory_mut(|memory| memory.stop_text_input());
+                self.notice = None;
+            }
+        }
+
+        if self.recording_hotkey {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new("Нажмите Ctrl/Alt/Shift + клавишу. Esc — отмена.")
+                    .font(theme::sans(9.5))
+                    .color(theme::ACCENT),
+            );
+        } else if let Some(error) = &self.daemon_hotkey_error {
+            ui.add_space(2.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(error)
+                        .font(theme::sans(9.5))
+                        .color(theme::DANGER),
+                )
+                .wrap(),
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn draw_hotkey(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Горячая клавиша")
+                    .font(theme::sans_medium(12.5))
+                    .color(theme::TEXT),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new("MOD+SHIFT+C → TOGGLE")
+                        .font(theme::mono(8.0))
+                        .color(theme::MUTED),
+                );
+            });
+        });
     }
 
     fn draw_notices(&self, ui: &mut Ui) {
@@ -466,7 +684,7 @@ impl GuiApp {
             return;
         };
 
-        ui.add_space(16.0);
+        ui.add_space(8.0);
         if let Some(error) = &self.daemon_error {
             widgets::banner(ui, theme::DANGER, "ОШИБКА ДЕМОНА", error);
         } else {
@@ -515,7 +733,6 @@ impl GuiApp {
                     .font(theme::mono(8.0))
                     .color(theme::DIM),
             );
-            hotkey_hint(ui);
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_enabled_ui(self.online, |ui| {
@@ -541,12 +758,12 @@ impl GuiApp {
         let mut close = false;
         let mut quit = false;
 
-        let modal = egui::Modal::new(Id::unique("quit_daemon"))
+        let modal = egui::Modal::new(Id::new("quit_daemon"))
             .backdrop_color(Color32::from_black_alpha(120))
             .frame(
                 Frame::new()
                     .fill(theme::PANEL)
-                    .stroke(Stroke::new(1.0, theme::LINE))
+                    .stroke(Stroke::new(1.0_f32, theme::LINE))
                     .corner_radius(CornerRadius::same(16))
                     .inner_margin(Margin::same(24))
                     .shadow(theme::shadow()),
@@ -602,8 +819,9 @@ impl GuiApp {
     }
 }
 
-impl eframe::App for GuiApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl egui_software_backend::App for GuiApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _backend: &mut SoftwareBackend) {
+        self.capture_hotkey(ui.ctx());
         self.drain_events(ui.ctx());
         self.maybe_apply_settings();
 
@@ -611,21 +829,21 @@ impl eframe::App for GuiApp {
             .frame(
                 Frame::new()
                     .fill(theme::BG)
-                    .inner_margin(Margin::symmetric(24, 16)),
+                    .inner_margin(Margin::symmetric(16, 10)),
             )
-            .show(ui, |ui| {
+            .show_inside(ui, |ui| {
                 egui::Panel::bottom("daemon_footer")
                     .frame(
                         Frame::new()
                             .fill(theme::BG)
-                            .inner_margin(Margin::symmetric(0, 8)),
+                            .inner_margin(Margin::symmetric(0, 4)),
                     )
                     .show_separator_line(false)
-                    .show(ui, |ui| {
+                    .show_inside(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.set_max_width(ui.available_width().min(CONTENT_WIDTH));
                             theme::rule(ui);
-                            ui.add_space(8.0);
+                            ui.add_space(3.0);
                             self.draw_footer(ui);
                         });
                     });
@@ -636,19 +854,17 @@ impl eframe::App for GuiApp {
                         ui.vertical_centered(|ui| {
                             ui.set_max_width(ui.available_width().min(CONTENT_WIDTH));
                             self.draw_topbar(ui);
-                            ui.add_space(12.0);
+                            ui.add_space(4.0);
                             theme::rule(ui);
                             self.draw_hero(ui);
                             self.draw_metrics(ui);
                             self.draw_notices(ui);
                             self.draw_settings(ui);
-                            ui.add_space(28.0);
                         });
                     });
             });
 
         self.draw_quit_confirmation(ui.ctx());
-        ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
 }
 
@@ -657,26 +873,22 @@ impl Drop for GuiApp {
         let _ = self.commands.send(Command::Shutdown);
         let _ = ipc::send("OFF");
         if let Ok(settings) = self.settings.to_settings() {
-            let _ = config::save(&settings);
+            let _ = config::save(&settings, &self.hotkey);
         }
     }
 }
 
-pub fn run() -> eframe::Result {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([620.0, 840.0])
-            .with_min_inner_size([500.0, 680.0])
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let config = SoftwareBackendAppConfiguration::new().viewport_builder(
+        egui::ViewportBuilder::default()
+            .with_app_id("autoclicker")
+            .with_inner_size(WINDOW_SIZE)
+            .with_min_inner_size(MIN_WINDOW_SIZE)
             .with_title("Autoclicker"),
-        centered: true,
-        ..Default::default()
-    };
+    );
 
-    eframe::run_native(
-        "Autoclicker",
-        options,
-        Box::new(|cc| Ok(Box::new(GuiApp::new(cc)))),
-    )
+    egui_software_backend::run_app_with_software_backend(config, GuiApp::new)
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
 }
 
 fn slider_setting(ui: &mut Ui, value: &mut f64, spec: SliderSpec<'_>) -> bool {
@@ -685,14 +897,14 @@ fn slider_setting(ui: &mut Ui, value: &mut f64, spec: SliderSpec<'_>) -> bool {
     ui.horizontal(|ui| {
         let response = ui.label(
             RichText::new(spec.title)
-                .font(theme::sans_medium(13.0))
+                .font(theme::sans_medium(12.5))
                 .color(theme::TEXT),
         );
         let _ = response.on_hover_text(spec.hint);
 
         let control_width = ui.available_width().max(100.0);
         ui.allocate_ui_with_layout(
-            Vec2::new(control_width, 24.0),
+            Vec2::new(control_width, 20.0),
             Layout::right_to_left(Align::Center),
             |ui| {
                 changed |= widgets::numeric_field(
@@ -707,7 +919,6 @@ fn slider_setting(ui: &mut Ui, value: &mut f64, spec: SliderSpec<'_>) -> bool {
         );
     });
 
-    ui.add_space(4.0);
     changed |=
         widgets::parameter_slider(ui, value, spec.range, spec.logarithmic, spec.step).changed();
 
@@ -718,53 +929,41 @@ fn choice_setting(ui: &mut Ui, title: &str, hint: &str, add: impl FnOnce(&mut Ui
     ui.horizontal(|ui| {
         let response = ui.label(
             RichText::new(title)
-                .font(theme::sans_medium(13.0))
+                .font(theme::sans_medium(12.5))
                 .color(theme::TEXT),
         );
         let _ = response.on_hover_text(hint);
     });
-    ui.add_space(4.0);
     add(ui)
 }
 
 fn settings_divider(ui: &mut Ui) {
-    ui.add_space(7.0);
     theme::rule(ui);
-    ui.add_space(7.0);
 }
 
 fn metric(ui: &mut Ui, label: &str, value: &str, unit: &str) {
     ui.label(
         RichText::new(label)
-            .font(theme::mono_medium(8.0))
+            .font(theme::mono_medium(7.0))
             .color(theme::MUTED),
     );
-    ui.add_space(5.0);
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 5.0;
+        ui.spacing_mut().item_spacing.x = 4.0;
         ui.label(
             RichText::new(value)
-                .font(theme::mono_medium(24.0))
+                .font(theme::mono_medium(16.0))
                 .color(theme::TEXT),
         );
-        ui.label(RichText::new(unit).font(theme::mono(8.5)).color(theme::DIM));
+        ui.label(RichText::new(unit).font(theme::mono(7.0)).color(theme::DIM));
     });
 }
 
-fn hotkey_hint(ui: &mut Ui) {
-    #[cfg(windows)]
-    {
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("CTRL + ALT + C")
-                .font(theme::mono(8.0))
-                .color(theme::DIM),
-        );
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = ui;
-    }
+#[cfg(windows)]
+fn hotkey_label(combo: &str) -> String {
+    crate::hotkey::Hotkey::parse(combo)
+        .map(|hotkey| hotkey.label())
+        .unwrap_or_else(|_| combo.to_ascii_uppercase())
 }
 
 fn trim_number(value: f64) -> String {

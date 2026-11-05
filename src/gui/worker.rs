@@ -2,7 +2,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use eframe::egui;
+use egui;
 
 use crate::ipc;
 use crate::state::{Settings, Status};
@@ -14,6 +14,7 @@ pub enum Command {
     Start(Settings),
     Stop,
     Apply(Settings),
+    SetHotkey(String),
     QuitDaemon,
     Shutdown,
 }
@@ -32,13 +33,13 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn spawn(ctx: egui::Context) -> std::io::Result<Self> {
+    pub fn spawn(ctx: egui::Context, hotkey: String) -> std::io::Result<Self> {
         let (command_tx, command_rx) = channel();
         let (event_tx, event_rx) = channel();
 
         thread::Builder::new()
             .name("autoclicker-gui-ipc".to_string())
-            .spawn(move || run(command_rx, event_tx, ctx))?;
+            .spawn(move || run(command_rx, event_tx, ctx, hotkey))?;
 
         Ok(Self {
             commands: command_tx,
@@ -47,9 +48,10 @@ impl Worker {
     }
 }
 
-fn run(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context) {
+fn run(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context, mut hotkey: String) {
     let mut online = false;
     let mut last_offline = None;
+    let mut last_status: Option<Status> = None;
     let mut next_poll = Instant::now();
 
     loop {
@@ -60,7 +62,15 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context) {
                 break;
             }
             Ok(command) => {
-                handle_command(command, &events, &ctx, &mut online, &mut last_offline);
+                handle_command(
+                    command,
+                    &events,
+                    &ctx,
+                    &mut online,
+                    &mut last_offline,
+                    &mut last_status,
+                    &mut hotkey,
+                );
                 next_poll = Instant::now() + POLL_INTERVAL;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -68,7 +78,13 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context) {
         }
 
         if Instant::now() >= next_poll {
-            poll(&events, &ctx, &mut online, &mut last_offline);
+            poll(
+                &events,
+                &ctx,
+                &mut online,
+                &mut last_offline,
+                &mut last_status,
+            );
             next_poll = Instant::now() + POLL_INTERVAL;
         }
     }
@@ -80,22 +96,32 @@ fn handle_command(
     ctx: &egui::Context,
     online: &mut bool,
     last_offline: &mut Option<String>,
+    last_status: &mut Option<Status>,
+    hotkey: &mut String,
 ) {
     let quit_daemon = matches!(command, Command::QuitDaemon);
 
     match command {
         Command::Start(settings) => {
             let command = settings.to_wire_command("ON");
-            match ipc::send_or_spawn(&command) {
+            match ipc::send_or_spawn_with_hotkey(&command, hotkey) {
                 Ok(response) => {
                     if let Err(error) = ipc::ensure_ok(&response) {
-                        send_error(events, format!("Не удалось запустить клики: {error:#}"));
+                        send_error(
+                            events,
+                            ctx,
+                            format!("Не удалось запустить клики: {error:#}"),
+                        );
                     } else {
                         *online = true;
                         *last_offline = None;
                     }
                 }
-                Err(error) => send_error(events, format!("Не удалось запустить демон: {error:#}")),
+                Err(error) => send_error(
+                    events,
+                    ctx,
+                    format!("Не удалось запустить демон: {error:#}"),
+                ),
             }
         }
         Command::Stop => {
@@ -108,7 +134,11 @@ fn handle_command(
                     *last_offline = None;
                 }
                 Err(error) => {
-                    send_error(events, format!("Не удалось остановить клики: {error:#}"));
+                    send_error(
+                        events,
+                        ctx,
+                        format!("Не удалось остановить клики: {error:#}"),
+                    );
                 }
             }
         }
@@ -123,7 +153,32 @@ fn handle_command(
                         *last_offline = None;
                     }
                     Err(error) => {
-                        send_error(events, format!("Не удалось применить настройки: {error:#}"));
+                        send_error(
+                            events,
+                            ctx,
+                            format!("Не удалось применить настройки: {error:#}"),
+                        );
+                    }
+                }
+            }
+        }
+        Command::SetHotkey(next) => {
+            *hotkey = next;
+            if *online {
+                let command = format!("HOTKEY {hotkey}");
+                match ipc::send(&command).and_then(|response| {
+                    ipc::ensure_ok(&response)?;
+                    Ok(())
+                }) {
+                    Ok(()) => {
+                        *last_offline = None;
+                    }
+                    Err(error) => {
+                        send_error(
+                            events,
+                            ctx,
+                            format!("Не удалось применить горячую клавишу: {error:#}"),
+                        );
                     }
                 }
             }
@@ -140,7 +195,11 @@ fn handle_command(
                     let _ = events.send(Event::Stopped);
                 }
                 Err(error) => {
-                    send_error(events, format!("Не удалось завершить демон: {error:#}"));
+                    send_error(
+                        events,
+                        ctx,
+                        format!("Не удалось завершить демон: {error:#}"),
+                    );
                 }
             }
         }
@@ -148,7 +207,7 @@ fn handle_command(
     }
 
     if !quit_daemon {
-        poll(events, ctx, online, last_offline);
+        poll(events, ctx, online, last_offline, last_status);
     }
     ctx.request_repaint();
 }
@@ -158,31 +217,37 @@ fn poll(
     ctx: &egui::Context,
     online: &mut bool,
     last_offline: &mut Option<String>,
+    last_status: &mut Option<Status>,
 ) {
     match ipc::send("STATUS") {
         Ok(response) => match Status::from_wire(&response) {
             Ok(status) => {
                 *online = true;
                 *last_offline = None;
-                let _ = events.send(Event::Status(status));
+                if last_status.as_ref() != Some(&status) {
+                    *last_status = Some(status.clone());
+                    let _ = events.send(Event::Status(status));
+                    ctx.request_repaint();
+                }
             }
             Err(error) => {
-                send_error(events, format!("Некорректный ответ демона: {error:#}"));
+                send_error(events, ctx, format!("Некорректный ответ демона: {error:#}"));
             }
         },
         Err(error) => {
             *online = false;
+            *last_status = None;
             let message = format!("{error:#}");
             if last_offline.as_deref() != Some(message.as_str()) {
                 *last_offline = Some(message.clone());
                 let _ = events.send(Event::Offline(message));
+                ctx.request_repaint();
             }
         }
     }
-
-    ctx.request_repaint();
 }
 
-fn send_error(events: &Sender<Event>, message: String) {
+fn send_error(events: &Sender<Event>, ctx: &egui::Context, message: String) {
     let _ = events.send(Event::Error(message));
+    ctx.request_repaint();
 }

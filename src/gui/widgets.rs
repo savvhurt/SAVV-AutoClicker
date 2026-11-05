@@ -1,4 +1,4 @@
-use eframe::egui::{
+use egui::{
     self, Align, Color32, CornerRadius, CursorIcon, Layout, Painter, Pos2, Rect, Response,
     RichText, Sense, Shape, Stroke, TextStyle, Ui, Vec2, pos2, vec2,
 };
@@ -10,15 +10,13 @@ pub fn status_badge(ui: &mut Ui, text: &str, dot: Color32, pulse: bool) -> Respo
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), theme::mono_medium(8.5), text_color);
-    let size = Vec2::new(galley.size().x + 16.0, 22.0);
+    let size = Vec2::new(galley.size().x + 16.0, 20.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
 
     let center = pos2(rect.left() + 3.0, rect.center().y);
     let painter = ui.painter();
     if pulse {
-        let time = ui.ctx().input(|input| input.time) as f32;
-        let wave = (time * 2.2).sin() * 0.5 + 0.5;
-        painter.circle_filled(center, 5.0, theme::alpha(dot, (10.0 + wave * 24.0) as u8));
+        painter.circle_filled(center, 5.0, theme::alpha(dot, 22));
     }
     painter.circle_filled(center, 2.4, dot);
     painter.galley(
@@ -30,8 +28,8 @@ pub fn status_badge(ui: &mut Ui, text: &str, dot: Color32, pulse: bool) -> Respo
     response
 }
 
-pub fn power_button(ui: &mut Ui, active: bool, busy: bool) -> Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(124.0), Sense::click());
+pub fn power_button(ui: &mut Ui, active: bool, busy: bool, size: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     let response = if busy {
         response
     } else {
@@ -45,7 +43,8 @@ pub fn power_button(ui: &mut Ui, active: bool, busy: bool) -> Response {
     let time = ctx.input(|input| input.time) as f32;
 
     let center = rect.center();
-    let radius = 50.0;
+    let radius = size * 0.40;
+    let outer = size * 0.06;
     let painter = ui.painter();
 
     if hover_t > 0.01 {
@@ -63,8 +62,11 @@ pub fn power_button(ui: &mut Ui, active: bool, busy: bool) -> Response {
         );
         painter.circle_stroke(
             center,
-            radius + 7.0,
-            Stroke::new(1.0, theme::alpha(theme::ACCENT, (46.0 * active_t) as u8)),
+            radius + outer,
+            Stroke::new(
+                1.0_f32,
+                theme::alpha(theme::ACCENT, (46.0 * active_t) as u8),
+            ),
         );
     }
 
@@ -76,16 +78,22 @@ pub fn power_button(ui: &mut Ui, active: bool, busy: bool) -> Response {
     painter.circle_stroke(center, radius, Stroke::new(1.2 + hover_t * 0.4, ring));
 
     let glyph = theme::mix(theme::TEXT, theme::BG, active_t);
-    paint_power_glyph(painter, center, radius * 0.36, glyph, 2.6);
+    paint_power_glyph(
+        painter,
+        center,
+        radius * 0.36,
+        glyph,
+        (size * 0.021).max(1.8),
+    );
 
     if busy {
         arc(
             painter,
             center,
-            radius + 13.0,
+            radius + outer + size * 0.03,
             time * 3.2,
             time * 3.2 + 1.5,
-            Stroke::new(1.5, theme::ACCENT),
+            Stroke::new(1.5_f32, theme::ACCENT),
         );
     }
 
@@ -106,11 +114,11 @@ pub fn paint_power_glyph(painter: &Painter, center: Pos2, radius: f32, color: Co
 
 pub fn segmented<T: Copy + PartialEq>(
     ui: &mut Ui,
-    id_salt: impl egui::AsIdSalt,
+    id_salt: impl std::hash::Hash,
     selected: &mut T,
     options: &[(T, &str)],
 ) -> bool {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
     let response = ui
         .interact(rect, ui.make_persistent_id(id_salt), Sense::click())
         .on_hover_cursor(CursorIcon::PointingHand);
@@ -150,7 +158,7 @@ pub fn segmented<T: Copy + PartialEq>(
             pos2(rect.left(), rect.bottom() - 0.5),
             pos2(rect.right(), rect.bottom() - 0.5),
         ],
-        Stroke::new(1.0, theme::LINE_SOFT),
+        Stroke::new(1.0_f32, theme::LINE_SOFT),
     );
 
     for (index, (value, label)) in options.iter().enumerate() {
@@ -174,7 +182,7 @@ pub fn segmented<T: Copy + PartialEq>(
         } else {
             theme::MUTED
         };
-        let galley = painter.layout_no_wrap((*label).to_owned(), theme::mono_medium(9.5), color);
+        let galley = painter.layout_no_wrap((*label).to_owned(), theme::mono_medium(8.5), color);
         let text_pos = pos2(
             segment.center().x - galley.size().x * 0.5,
             segment.center().y - galley.size().y * 0.5,
@@ -188,7 +196,7 @@ pub fn segmented<T: Copy + PartialEq>(
                     pos2(segment.center().x - half, rect.bottom() - 1.5),
                     pos2(segment.center().x + half, rect.bottom() - 1.5),
                 ],
-                Stroke::new(1.5, theme::ACCENT),
+                Stroke::new(1.5_f32, theme::ACCENT),
             );
         }
     }
@@ -208,7 +216,7 @@ pub fn parameter_slider(
     step: f64,
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), 22.0),
+        Vec2::new(ui.available_width(), 14.0),
         Sense::click_and_drag(),
     );
     let mut response = response.on_hover_cursor(CursorIcon::ResizeHorizontal);
@@ -248,9 +256,9 @@ pub fn parameter_slider(
 
     let hot = response.hovered() || response.dragged();
     let handle = pos2(handle_x, center_y);
-    let radius = if hot { 6.0 } else { 5.0 };
+    let radius = if hot { 5.0 } else { 4.0 };
     painter.circle_filled(handle, radius, if hot { theme::ACCENT } else { theme::BG });
-    painter.circle_stroke(handle, radius, Stroke::new(1.5, theme::ACCENT));
+    painter.circle_stroke(handle, radius, Stroke::new(1.5_f32, theme::ACCENT));
 
     response
 }
@@ -266,11 +274,11 @@ pub fn numeric_field(
     ui.spacing_mut().item_spacing.x = 5.0;
     ui.label(
         RichText::new(suffix)
-            .font(theme::mono_medium(8.5))
+            .font(theme::mono_medium(8.0))
             .color(theme::DIM),
     );
 
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 24.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(54.0, 18.0), Sense::hover());
     let hovered = ui.rect_contains_pointer(rect);
 
     let mut child = ui.new_child(
@@ -279,8 +287,8 @@ pub fn numeric_field(
             .layout(Layout::right_to_left(Align::Center)),
     );
     child.style_mut().override_text_style = Some(TextStyle::Monospace);
-    child.style_mut().override_font_id = Some(theme::mono_medium(13.0));
-    child.spacing_mut().interact_size = Vec2::new(56.0, 20.0);
+    child.style_mut().override_font_id = Some(theme::mono_medium(12.0));
+    child.spacing_mut().interact_size = Vec2::new(46.0, 18.0);
     child.visuals_mut().extreme_bg_color = theme::PANEL;
     child.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     child.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
@@ -290,13 +298,12 @@ pub fn numeric_field(
     child.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
 
     let changed = child
-        .add(
+        .add_sized(
+            Vec2::new(46.0, 18.0),
             egui::DragValue::new(value)
                 .range(range)
                 .speed(speed)
-                .max_decimals(decimals)
-                .clip_text(true)
-                .min_size(Vec2::new(56.0, 20.0)),
+                .max_decimals(decimals),
         )
         .changed();
 
@@ -305,7 +312,7 @@ pub fn numeric_field(
             pos2(rect.left() + 2.0, rect.bottom() - 0.5),
             pos2(rect.right() - 2.0, rect.bottom() - 0.5),
         ],
-        Stroke::new(1.0, if hovered { theme::MUTED } else { theme::LINE }),
+        Stroke::new(1.0_f32, if hovered { theme::MUTED } else { theme::LINE }),
     );
 
     changed
@@ -337,7 +344,7 @@ pub fn text_button(ui: &mut Ui, label: &str, idle: Color32, hover: Color32) -> R
     let prepared = ui
         .painter()
         .layout_no_wrap(label.to_owned(), theme::sans_medium(10.5), idle);
-    let size = Vec2::new(prepared.size().x + 20.0, 28.0);
+    let size = Vec2::new(prepared.size().x + 20.0, 24.0);
     let (rect, response) = ui.allocate_exact_size(
         size,
         if enabled {

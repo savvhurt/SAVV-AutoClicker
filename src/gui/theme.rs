@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use eframe::egui::{
+use egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Shadow,
     Stroke, TextStyle, Vec2,
 };
@@ -77,7 +77,7 @@ pub fn rule(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), egui::Sense::hover());
     ui.painter().line_segment(
         [rect.left_center(), rect.right_center()],
-        Stroke::new(1.0, LINE_SOFT),
+        Stroke::new(1.0_f32, LINE_SOFT),
     );
 }
 
@@ -118,30 +118,15 @@ fn install_fonts(ctx: &egui::Context) {
 
     fonts.families.insert(
         named_family(FAMILY_SANS_MEDIUM),
-        vec![
-            SANS_MEDIUM.to_owned(),
-            SANS_REGULAR.to_owned(),
-            "Ubuntu-Light".to_owned(),
-            "egui-icons".to_owned(),
-        ],
+        vec![SANS_MEDIUM.to_owned(), SANS_REGULAR.to_owned()],
     );
     fonts.families.insert(
         named_family(FAMILY_SANS_SEMIBOLD),
-        vec![
-            SANS_SEMIBOLD.to_owned(),
-            SANS_REGULAR.to_owned(),
-            "Ubuntu-Light".to_owned(),
-            "egui-icons".to_owned(),
-        ],
+        vec![SANS_SEMIBOLD.to_owned(), SANS_REGULAR.to_owned()],
     );
     fonts.families.insert(
         named_family(FAMILY_MONO_MEDIUM),
-        vec![
-            MONO_MEDIUM.to_owned(),
-            MONO_REGULAR.to_owned(),
-            "Hack".to_owned(),
-            "egui-icons".to_owned(),
-        ],
+        vec![MONO_MEDIUM.to_owned(), MONO_REGULAR.to_owned()],
     );
 
     ctx.set_fonts(fonts);
@@ -190,7 +175,7 @@ fn visuals() -> egui::Visuals {
     visuals.faint_bg_color = INPUT;
     visuals.extreme_bg_color = PANEL;
     visuals.code_bg_color = INPUT;
-    visuals.window_stroke = Stroke::new(1.0, LINE);
+    visuals.window_stroke = Stroke::new(1.0_f32, LINE);
     visuals.window_corner_radius = CornerRadius::same(16);
     visuals.window_shadow = shadow();
     visuals.popup_shadow = shadow();
@@ -199,9 +184,9 @@ fn visuals() -> egui::Visuals {
     visuals.warn_fg_color = WARNING;
     visuals.error_fg_color = DANGER;
     visuals.selection.bg_fill = alpha(ACCENT, 40);
-    visuals.selection.stroke = Stroke::new(1.0, ACCENT);
+    visuals.selection.stroke = Stroke::new(1.0_f32, ACCENT);
     visuals.slider_trailing_fill = true;
-    visuals.text_cursor.stroke = Stroke::new(1.5, ACCENT);
+    visuals.text_cursor.stroke = Stroke::new(1.5_f32, ACCENT);
 
     let mut widgets = visuals.widgets.clone();
     widgets.noninteractive = egui::style::WidgetVisuals {
@@ -209,7 +194,7 @@ fn visuals() -> egui::Visuals {
         weak_bg_fill: BG,
         bg_stroke: Stroke::NONE,
         corner_radius: CornerRadius::same(8),
-        fg_stroke: Stroke::new(1.0, TEXT),
+        fg_stroke: Stroke::new(1.0_f32, TEXT),
         expansion: 0.0,
     };
     widgets.inactive = egui::style::WidgetVisuals {
@@ -217,7 +202,7 @@ fn visuals() -> egui::Visuals {
         weak_bg_fill: Color32::TRANSPARENT,
         bg_stroke: Stroke::NONE,
         corner_radius: CornerRadius::same(8),
-        fg_stroke: Stroke::new(1.0, TEXT),
+        fg_stroke: Stroke::new(1.0_f32, TEXT),
         expansion: 0.0,
     };
     widgets.hovered = egui::style::WidgetVisuals {
@@ -225,7 +210,7 @@ fn visuals() -> egui::Visuals {
         weak_bg_fill: alpha(TEXT, 7),
         bg_stroke: Stroke::NONE,
         corner_radius: CornerRadius::same(8),
-        fg_stroke: Stroke::new(1.0, TEXT),
+        fg_stroke: Stroke::new(1.0_f32, TEXT),
         expansion: 0.0,
     };
     widgets.active = egui::style::WidgetVisuals {
@@ -233,7 +218,7 @@ fn visuals() -> egui::Visuals {
         weak_bg_fill: alpha(ACCENT, 20),
         bg_stroke: Stroke::NONE,
         corner_radius: CornerRadius::same(8),
-        fg_stroke: Stroke::new(1.0, TEXT),
+        fg_stroke: Stroke::new(1.0_f32, TEXT),
         expansion: 0.0,
     };
     visuals.widgets = widgets;
