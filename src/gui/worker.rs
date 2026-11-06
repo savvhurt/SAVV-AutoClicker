@@ -15,6 +15,15 @@ pub enum Command {
     Stop,
     Apply(Settings),
     SetHotkey(String),
+    #[cfg(windows)]
+    PauseHotkey,
+    #[cfg(windows)]
+    ResumeHotkey,
+    #[cfg(windows)]
+    RestartDaemon {
+        hotkey: String,
+        resume: Option<Settings>,
+    },
     QuitDaemon,
     Shutdown,
 }
@@ -58,6 +67,7 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context, m
         let timeout = next_poll.saturating_duration_since(Instant::now());
         match commands.recv_timeout(timeout) {
             Ok(Command::Shutdown) => {
+                let _ = ipc::send("HOTKEY_RESUME");
                 let _ = ipc::send("OFF");
                 break;
             }
@@ -181,6 +191,101 @@ fn handle_command(
                         );
                     }
                 }
+            }
+        }
+        #[cfg(windows)]
+        Command::PauseHotkey => {
+            if *online {
+                match ipc::send("HOTKEY_PAUSE").and_then(|response| {
+                    ipc::ensure_ok(&response)?;
+                    Ok(())
+                }) {
+                    Ok(()) => {}
+                    Err(error) => send_error(
+                        events,
+                        ctx,
+                        format!("Не удалось приостановить горячую клавишу: {error:#}"),
+                    ),
+                }
+            }
+        }
+        #[cfg(windows)]
+        Command::ResumeHotkey => {
+            if *online {
+                match ipc::send("HOTKEY_RESUME").and_then(|response| {
+                    ipc::ensure_ok(&response)?;
+                    Ok(())
+                }) {
+                    Ok(()) => {}
+                    Err(error) => send_error(
+                        events,
+                        ctx,
+                        format!("Не удалось восстановить горячую клавишу: {error:#}"),
+                    ),
+                }
+            }
+        }
+        #[cfg(windows)]
+        Command::RestartDaemon {
+            hotkey: next,
+            resume,
+        } => {
+            *hotkey = next;
+            let _ = ipc::send("OFF");
+            let _ = ipc::send("QUIT");
+
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut stopped = false;
+            while Instant::now() < deadline {
+                if ipc::send("STATUS").is_err() {
+                    stopped = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+
+            if !stopped {
+                send_error(
+                    events,
+                    ctx,
+                    "Не удалось остановить старый демон для обновления горячей клавиши."
+                        .to_string(),
+                );
+                return;
+            }
+
+            match ipc::send_or_spawn_with_hotkey("STATUS", hotkey) {
+                Ok(response) => {
+                    if let Err(error) = ipc::ensure_ok(&response) {
+                        send_error(
+                            events,
+                            ctx,
+                            format!("Не удалось перезапустить демон: {error:#}"),
+                        );
+                        return;
+                    }
+                    if let Some(settings) = resume {
+                        let command = settings.to_wire_command("ON");
+                        if let Err(error) = ipc::send(&command).and_then(|response| {
+                            ipc::ensure_ok(&response)?;
+                            Ok(())
+                        }) {
+                            send_error(
+                                events,
+                                ctx,
+                                format!("Демон перезапущен, но клики не возобновлены: {error:#}"),
+                            );
+                        }
+                    }
+                    *online = true;
+                    *last_offline = None;
+                    *last_status = None;
+                }
+                Err(error) => send_error(
+                    events,
+                    ctx,
+                    format!("Не удалось перезапустить демон: {error:#}"),
+                ),
             }
         }
         Command::QuitDaemon => {

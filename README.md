@@ -13,7 +13,7 @@
 - Левая, правая и средняя кнопка мыши.
 - Фоновый демон + настраиваемая горячая клавиша: глобальная на Windows, через bind композитора на Linux.
 - CLI: `toggle`, `on`, `off`, `status`, `quit`.
-- Опциональный GUI (`autoclicker-gui`): запуск/остановка, живые настройки, статистика, запись горячей клавиши и сохранение профиля. Окно 460×560 (минимум 420×520), без прокрутки при штатных настройках.
+- GUI в том же бинаре: запуск без аргументов открывает окно, подкоманды остаются CLI. Запуск/остановка, живые настройки, статистика, запись горячей клавиши и сохранение профиля. Окно 460×560 (минимум 420×520), без прокрутки при штатных настройках.
 - Кнопка гарантированно отпускается при остановке, Ctrl+C и завершении демона.
 - Единственный экземпляр демона, управление через локальный сокет (Unix socket / Windows named pipe).
 
@@ -31,13 +31,13 @@ CLI и GUI:
 cargo build --release --features gui
 ```
 
-- Linux: `target/release/autoclicker`, `target/release/autoclicker-gui`
-- Windows: `target\release\autoclicker.exe`, `target\release\autoclicker-gui.exe` (нужны Rust stable с MSVC toolchain и Visual Studio Build Tools)
+- Linux: `target/release/autoclicker`
+- Windows: `target\release\autoclicker.exe` (нужны Rust stable с MSVC toolchain и Visual Studio Build Tools)
 - Для сборки GUI нужен Rust 1.92+ (требование `egui` 0.34); CLI собирается и на более старом Rust.
 
 ### Кросс-сборка под Windows из Linux
 
-Можно собрать оба `.exe` без Windows-машины через MSVC-таргет и `cargo-xwin`. Нужны `clang` и `lld`:
+Можно собрать `.exe` без Windows-машины через MSVC-таргет и `cargo-xwin`. Нужны `clang` и `lld`:
 
 ```bash
 rustup target add x86_64-pc-windows-msvc
@@ -45,14 +45,9 @@ cargo install cargo-xwin
 cargo xwin build --release --features gui --target x86_64-pc-windows-msvc
 ```
 
-Готовые файлы появятся в `target/x86_64-pc-windows-msvc/release/`:
+Готовый файл появится в `target/x86_64-pc-windows-msvc/release/autoclicker.exe`.
 
-```text
-autoclicker.exe
-autoclicker-gui.exe
-```
-
-Первый запуск скачивает MSVC CRT и Windows SDK. GUI собирается как оконное приложение без консоли; при фатальной ошибке запуска пишется `%APPDATA%\autoclicker\gui-error.log` и показывается системное окно с ошибкой.
+Первый запуск скачивает MSVC CRT и Windows SDK. Бинарь собирается как оконное приложение; при запуске из терминала он подключается к родительской консоли, поэтому `status`, `toggle` и `--help` печатают вывод как обычно. При фатальной ошибке GUI пишется `%APPDATA%\autoclicker\gui-error.log` и показывается системное окно с ошибкой.
 
 ### Готовые Windows-сборки
 
@@ -61,7 +56,7 @@ autoclicker-gui.exe
 - ручной запуск через **Actions → Windows release → Run workflow** собирает `autoclicker-windows-x86_64.zip` и прикладывает его как artifact;
 - пуш тега `v*` дополнительно создаёт GitHub Release с этим архивом.
 
-В архив входят CLI, GUI, README и лицензия шрифтов.
+В архив входит один `autoclicker.exe`, README и лицензия шрифтов.
 
 ## Быстрый старт
 
@@ -100,7 +95,7 @@ autoclicker daemon            # foreground, полезно для отладки
 ## GUI
 
 ```bash
-./target/release/autoclicker-gui
+./target/release/autoclicker
 ```
 
 ![Минималистичная панель autoclicker](docs/gui.png)
@@ -108,8 +103,10 @@ autoclicker daemon            # foreground, полезно для отладки
 На Windows:
 
 ```powershell
-.\target\release\autoclicker-gui.exe
+.\target\release\autoclicker.exe
 ```
+
+Без аргументов запускается GUI. С аргументами тот же файл работает как CLI: `autoclicker.exe status`, `autoclicker.exe toggle`, `autoclicker.exe daemon --detach`.
 
 Интерфейс минималистичный: тёплый бумажный фон, чернильная типографика, один сигнальный оранжевый акцент, крупная кнопка питания и плоские ряды параметров без карточек и декоративной сетки. Шрифты IBM Plex Sans / IBM Plex Mono встроены в бинарь; лицензия лежит в `assets/fonts/LICENSE.txt`.
 
@@ -122,9 +119,11 @@ autoclicker daemon            # foreground, полезно для отладки
 - сохранять настройки между запусками и применять их к уже работающему демону;
 - завершать демон отдельной кнопкой с подтверждением.
 
-Окно рассчитано на 460×560 px и не прокручивается при штатных настройках; минимальный размер — 420×520. На Linux GUI показывает bind `MOD+SHIFT+C → TOGGLE`, который нужно прописать в композиторе (см. раздел «Горячая клавиша»). На Windows комбинация записывается прямо в интерфейсе: нажми на неё, затем Ctrl/Alt/Shift + клавиша; Esc отменяет запись. Конфликт с другой программой показывается под строкой, прежняя комбинация остаётся активной.
+Окно рассчитано на 460×560 px и не прокручивается при штатных настройках; минимальный размер — 420×520. На Linux GUI показывает рекомендуемый bind `MOD+ALT+C → TOGGLE` и кликабельную подпись, которая копирует готовую строку с полным путём к текущему бинарю (см. раздел «Горячая клавиша»).
 
-GUI ищет `autoclicker` рядом с `autoclicker-gui` или в `PATH`, поэтому держи оба бинаря вместе. При закрытии окна клики выключаются, но сам демон продолжает работать — чтобы остановить его, нажми «Завершить демон» или выполни `autoclicker quit`.
+На Windows комбинация записывается прямо в интерфейсе: нажми на неё, затем Ctrl/Alt/Shift + клавиша; Esc отменяет запись. На время записи демон снимает регистрацию, поэтому можно записать и уже активную комбинацию. Конфликт с другой программой показывается под строкой, прежняя комбинация остаётся активной. Если демон запущен старой версией без поддержки смены хоткея, GUI один раз автоматически перезапустит его с текущей комбинацией. Запасной способ — `autoclicker.exe daemon --hotkey ctrl+shift+f8`: при работающем демоне команда применяет комбинацию на лету.
+
+При закрытии окна клики выключаются, но сам демон продолжает работать — чтобы остановить его, нажми «Завершить демон» или выполни `autoclicker quit`.
 
 Профиль GUI (настройки и горячая клавиша):
 
@@ -164,21 +163,23 @@ sudo udevadm trigger
 
 ### Горячая клавиша
 
-На Wayland глобальные клавиши обрабатывает композитор, поэтому `--hotkey` и запись комбинации в GUI на Linux не регистрируются. Настрой горячую клавишу средствами композитора; GUI показывает рекомендуемую комбинацию `MOD+SHIFT+C`.
+На Wayland глобальные клавиши обрабатывает композитор, поэтому `--hotkey` и запись комбинации в GUI на Linux не регистрируются. Настрой горячую клавишу средствами композитора; GUI показывает рекомендуемую комбинацию `MOD+ALT+C` и копирует готовый bind с полным путём.
 
-**niri** — в `~/.config/niri/config.kdl`:
+**niri** — в `~/.config/niri/config.kdl` или в подключённом файле биндов:
 
 ```kdl
 binds {
-    Mod+Shift+C { spawn "autoclicker" "toggle"; }
+    Mod+Alt+C { spawn "autoclicker" "toggle"; }
 }
 ```
 
 Если бинарь не в `PATH`, укажи полный путь:
 
 ```kdl
-Mod+Shift+C { spawn "/home/vvv/autoclicker/target/release/autoclicker" "toggle"; }
+Mod+Alt+C { spawn "/home/vvv/autoclicker/target/release/autoclicker" "toggle"; }
 ```
+
+`Mod+Shift+C` не используй: во многих конфигурациях niri он уже занят (`center-column`). После изменения конфига выполни `niri msg action load-config-file` или перезагрузи niri.
 
 **GNOME / KDE** — Settings → Keyboard → Custom Shortcut, команда:
 
@@ -212,9 +213,19 @@ autoclicker toggle
 .\autoclicker.exe daemon --hotkey ctrl+shift+f8
 ```
 
+Если демон уже запущен, эта команда применит новую комбинацию к нему без перезапуска. Посмотреть запрошенную и реально активную комбинацию можно так:
+
+```powershell
+.\autoclicker.exe status
+```
+
+В выводе будут строки `hotkey`, `hotkey_active` и `hotkey_error`. Если `hotkey_active` равен `none` или отличается от `hotkey`, смотри `hotkey_error` — обычно это конфликт с другой программой.
+
 Поддерживаются модификаторы `ctrl`, `alt`, `shift`, `win` и клавиши `A-Z`, `0-9`, `F1-F24`, `Space`, `Tab`, `Enter`, `Esc`, `Backspace`. В GUI записываются только Ctrl/Alt/Shift: клавишу Win egui не передаёт, но её по-прежнему можно указать через `--hotkey`.
 
 Автозапуск: создай ярлык на `autoclicker.exe daemon --detach` в папке `shell:startup`. Консоль мелькнёт при входе, сам демон останется скрытым.
+
+При обновлении со старой версии: сначала заверши старый демон (`autoclicker.exe quit`), закрой старый GUI и удали `autoclicker-gui.exe`. Новый `autoclicker.exe` без аргументов открывает GUI; отдельный `autoclicker-gui.exe` больше не нужен.
 
 CLI работает так же, как на Linux:
 
@@ -242,7 +253,7 @@ CLI работает так же, как на Linux:
 | `--hold-ms MS` | `10` | Сколько кнопка держится нажатой, `0.1–5000`; автоматически ограничивается периодом |
 | `--jitter-pct PCT` | `0` | Случайное отклонение интервала, `0–100` |
 | `--duration-secs SECS` | — | Только для `run`: остановиться через N секунд |
-| `--hotkey COMBO` | `ctrl+alt+c` | Только Windows |
+| `--hotkey COMBO` | `ctrl+alt+c` | Только Windows; при живом демоне применяется на лету |
 | `--detach` | — | Только `daemon`: уйти в фон |
 
 Примеры:
@@ -279,7 +290,7 @@ cargo test --all-targets --all-features
 cargo xwin check --all-targets --all-features --target x86_64-pc-windows-msvc
 ```
 
-CI (`.github/workflows/ci.yml`) собирает и тестирует CLI и GUI на `ubuntu-latest` и `windows-latest`.
+CI (`.github/workflows/ci.yml`) собирает и тестирует бинарь с GUI на `ubuntu-latest` и `windows-latest`.
 
 Ручная проверка на Linux:
 

@@ -1,6 +1,7 @@
 use std::mem::size_of;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -12,7 +13,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEINPUT, RegisterHotKey, SendInput, UnregisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, WM_HOTKEY,
+    GetMessageW, KillTimer, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetTimer,
+    WM_HOTKEY, WM_TIMER,
 };
 
 use crate::hotkey::Hotkey;
@@ -66,8 +68,14 @@ fn send(button: Button, down: bool) -> Result<()> {
 const HOTKEY_ID_A: i32 = 1;
 const HOTKEY_ID_B: i32 = 2;
 const WM_RELOAD_HOTKEY: u32 = 0x8000 + 1;
+const WM_PAUSE_HOTKEY: u32 = 0x8000 + 2;
+const WM_RESUME_HOTKEY: u32 = 0x8000 + 3;
+const TIMER_RESUME: usize = 1;
+const PAUSE_TIMEOUT_MS: u32 = 30_000;
 
 static HOTKEY_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+static HOTKEY_REQUEST_LOCK: Mutex<()> = Mutex::new(());
+static HOTKEY_RESPONSE: Mutex<Option<Sender<std::result::Result<(), String>>>> = Mutex::new(None);
 
 pub(crate) fn spawn_hotkey(shared: Arc<SharedState>, hotkey: Hotkey) -> Result<()> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
@@ -83,13 +91,15 @@ pub(crate) fn spawn_hotkey(shared: Arc<SharedState>, hotkey: Hotkey) -> Result<(
 
             let mut next_id = HOTKEY_ID_A;
             let mut active = None;
+            let mut paused = None;
             match register_hotkey(next_id, &hotkey) {
                 Ok(()) => {
+                    shared.set_hotkey_active(hotkey.to_string());
                     active = Some((hotkey, next_id));
-                    shared.clear_hotkey_error();
                     let _ = ready_tx.send(Ok(()));
                 }
                 Err(error) => {
+                    shared.clear_hotkey_active();
                     shared.set_hotkey_error(format!("could not register global hotkey: {error}"));
                     let _ = ready_tx.send(Err(error));
                 }
@@ -108,7 +118,22 @@ pub(crate) fn spawn_hotkey(shared: Arc<SharedState>, hotkey: Hotkey) -> Result<(
                         shared.toggle();
                     }
                     WM_RELOAD_HOTKEY => {
-                        reload_hotkey(&shared, &mut active, &mut next_id);
+                        handle_reload_hotkey(&shared, &mut active, &mut paused, &mut next_id);
+                    }
+                    WM_PAUSE_HOTKEY => {
+                        handle_pause_hotkey(&shared, &mut active, &mut paused);
+                    }
+                    WM_RESUME_HOTKEY => {
+                        handle_resume_hotkey(&shared, &mut active, &mut paused, &mut next_id, true);
+                    }
+                    WM_TIMER if message.wParam.0 == TIMER_RESUME => {
+                        handle_resume_hotkey(
+                            &shared,
+                            &mut active,
+                            &mut paused,
+                            &mut next_id,
+                            false,
+                        );
                     }
                     _ => {}
                 }
@@ -123,20 +148,50 @@ pub(crate) fn spawn_hotkey(shared: Arc<SharedState>, hotkey: Hotkey) -> Result<(
 }
 
 pub(crate) fn request_hotkey(shared: &SharedState, combo: &str) -> Result<()> {
+    let hotkey = Hotkey::parse(combo)?;
+    let canonical = hotkey.to_string();
+    shared.request_hotkey(canonical);
+    send_hotkey_message(WM_RELOAD_HOTKEY)
+}
+
+pub(crate) fn pause_registration(_shared: &SharedState) -> Result<()> {
+    send_hotkey_message(WM_PAUSE_HOTKEY)
+}
+
+pub(crate) fn resume_registration(_shared: &SharedState) -> Result<()> {
+    send_hotkey_message(WM_RESUME_HOTKEY)
+}
+
+fn send_hotkey_message(message: u32) -> Result<()> {
+    let _serial = HOTKEY_REQUEST_LOCK.lock().unwrap();
+
     let thread_id = HOTKEY_THREAD_ID.load(Ordering::Acquire);
     if thread_id == 0 {
         bail!("the global hotkey thread is not running");
     }
 
-    shared.request_hotkey(combo);
-    if let Err(error) =
-        unsafe { PostThreadMessageW(thread_id, WM_RELOAD_HOTKEY, WPARAM(0), LPARAM(0)) }
-    {
-        let message = format!("failed to wake the global hotkey thread: {error}");
-        shared.set_hotkey_error(message.clone());
-        bail!("{message}");
+    let (response_tx, response_rx) = channel();
+    *HOTKEY_RESPONSE.lock().unwrap() = Some(response_tx);
+
+    if let Err(error) = unsafe { PostThreadMessageW(thread_id, message, WPARAM(0), LPARAM(0)) } {
+        let _ = HOTKEY_RESPONSE.lock().unwrap().take();
+        bail!("failed to wake the global hotkey thread: {error}");
     }
-    Ok(())
+
+    match response_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => bail!("{error}"),
+        Err(_) => {
+            let _ = HOTKEY_RESPONSE.lock().unwrap().take();
+            bail!("the global hotkey thread did not respond")
+        }
+    }
+}
+
+fn respond(result: std::result::Result<(), String>) {
+    if let Some(sender) = HOTKEY_RESPONSE.lock().unwrap().take() {
+        let _ = sender.send(result);
+    }
 }
 
 fn register_hotkey(id: i32, hotkey: &Hotkey) -> std::result::Result<(), String> {
@@ -144,15 +199,23 @@ fn register_hotkey(id: i32, hotkey: &Hotkey) -> std::result::Result<(), String> 
         .map_err(|error| error.to_string())
 }
 
-fn reload_hotkey(shared: &SharedState, active: &mut Option<(Hotkey, i32)>, next_id: &mut i32) {
+fn handle_reload_hotkey(
+    shared: &SharedState,
+    active: &mut Option<(Hotkey, i32)>,
+    paused: &mut Option<(Hotkey, i32)>,
+    next_id: &mut i32,
+) {
     let Some(combo) = shared.take_hotkey_request() else {
+        respond(Ok(()));
         return;
     };
 
     let hotkey = match Hotkey::parse(&combo) {
         Ok(hotkey) => hotkey,
         Err(error) => {
-            shared.set_hotkey_error(format!("invalid hotkey: {error:#}"));
+            let message = format!("invalid hotkey: {error:#}");
+            shared.set_hotkey_error(message.clone());
+            respond(Err(message));
             return;
         }
     };
@@ -160,23 +223,134 @@ fn reload_hotkey(shared: &SharedState, active: &mut Option<(Hotkey, i32)>, next_
     let id = *next_id;
     match register_hotkey(id, &hotkey) {
         Ok(()) => {
-            if let Some((_, old_id)) = active.replace((hotkey, id)) {
+            if let Some((_, old_id)) = active.replace((hotkey.clone(), id)) {
                 let _ = unsafe { UnregisterHotKey(None, old_id) };
             }
+            *paused = None;
             *next_id = other_id(id);
-            shared.clear_hotkey_error();
+            stop_resume_timer();
+            shared.set_hotkey_active(hotkey.to_string());
+            respond(Ok(()));
         }
         Err(error) => {
-            let message = match active {
-                Some((current, _)) => format!(
-                    "could not register global hotkey: {error}; {} is still active",
-                    current.label()
+            let (message, restored) = match active.as_ref() {
+                Some((current, _)) => (
+                    format!(
+                        "could not register global hotkey: {error}; {} is still active",
+                        current.label()
+                    ),
+                    true,
                 ),
-                None => format!("could not register global hotkey: {error}"),
+                None => match paused.take() {
+                    Some((previous, previous_id)) => {
+                        match register_hotkey(previous_id, &previous) {
+                            Ok(()) => {
+                                let canonical = previous.to_string();
+                                *active = Some((previous, previous_id));
+                                (
+                                    format!(
+                                        "could not register global hotkey: {error}; {} is still active",
+                                        canonical
+                                    ),
+                                    true,
+                                )
+                            }
+                            Err(restore_error) => (
+                                format!(
+                                    "could not register global hotkey: {error}; previous hotkey could not be restored: {restore_error}"
+                                ),
+                                false,
+                            ),
+                        }
+                    }
+                    None => (format!("could not register global hotkey: {error}"), false),
+                },
             };
-            shared.set_hotkey_error(message);
+
+            if restored {
+                if let Some((current, _)) = active.as_ref() {
+                    shared.set_hotkey_active(current.to_string());
+                }
+            } else {
+                shared.clear_hotkey_active();
+            }
+            stop_resume_timer();
+            shared.set_hotkey_paused(false);
+            shared.set_hotkey_error(message.clone());
+            respond(Err(message));
         }
     }
+}
+
+fn handle_pause_hotkey(
+    shared: &SharedState,
+    active: &mut Option<(Hotkey, i32)>,
+    paused: &mut Option<(Hotkey, i32)>,
+) {
+    if let Some((hotkey, id)) = active.take() {
+        let _ = unsafe { UnregisterHotKey(None, id) };
+        *paused = Some((hotkey, id));
+    }
+
+    shared.clear_hotkey_active();
+    shared.set_hotkey_paused(true);
+    schedule_resume_timer();
+    respond(Ok(()));
+}
+
+fn handle_resume_hotkey(
+    shared: &SharedState,
+    active: &mut Option<(Hotkey, i32)>,
+    paused: &mut Option<(Hotkey, i32)>,
+    next_id: &mut i32,
+    reply: bool,
+) {
+    stop_resume_timer();
+    shared.set_hotkey_paused(false);
+
+    if active.is_some() {
+        if reply {
+            respond(Ok(()));
+        }
+        return;
+    }
+
+    let Some((hotkey, _)) = paused.take() else {
+        shared.clear_hotkey_active();
+        if reply {
+            respond(Ok(()));
+        }
+        return;
+    };
+
+    let id = *next_id;
+    match register_hotkey(id, &hotkey) {
+        Ok(()) => {
+            *next_id = other_id(id);
+            shared.set_hotkey_active(hotkey.to_string());
+            *active = Some((hotkey, id));
+            if reply {
+                respond(Ok(()));
+            }
+        }
+        Err(error) => {
+            let message = format!("could not restore global hotkey: {error}");
+            shared.clear_hotkey_active();
+            shared.set_hotkey_error(message.clone());
+            *paused = Some((hotkey, id));
+            if reply {
+                respond(Err(message));
+            }
+        }
+    }
+}
+
+fn schedule_resume_timer() {
+    let _ = unsafe { SetTimer(None, TIMER_RESUME, PAUSE_TIMEOUT_MS, None) };
+}
+
+fn stop_resume_timer() {
+    let _ = unsafe { KillTimer(None, TIMER_RESUME) };
 }
 
 fn other_id(id: i32) -> i32 {

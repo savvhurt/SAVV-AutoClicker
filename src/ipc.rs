@@ -177,6 +177,8 @@ fn process(line: &str, shared: &SharedState) -> String {
         "ON" => handle_on(parts, shared),
         "SET" => handle_set(parts, shared),
         "HOTKEY" => handle_hotkey(parts, shared),
+        "HOTKEY_PAUSE" => handle_hotkey_pause(shared),
+        "HOTKEY_RESUME" => handle_hotkey_resume(shared),
         "OFF" => {
             shared.off();
             "OK\n".to_string()
@@ -230,9 +232,35 @@ fn handle_hotkey(parts: std::str::SplitWhitespace<'_>, shared: &SharedState) -> 
     #[cfg(not(windows))]
     {
         let _ = hotkey;
-        shared.set_hotkey(canonical);
+        shared.set_hotkey_requested(canonical);
         "OK\n".to_string()
     }
+}
+
+#[cfg(windows)]
+fn handle_hotkey_pause(shared: &SharedState) -> String {
+    match crate::backend::win::pause_registration(shared) {
+        Ok(()) => "OK\n".to_string(),
+        Err(error) => format!("ERR {error:#}\n"),
+    }
+}
+
+#[cfg(not(windows))]
+fn handle_hotkey_pause(_shared: &SharedState) -> String {
+    "OK\n".to_string()
+}
+
+#[cfg(windows)]
+fn handle_hotkey_resume(shared: &SharedState) -> String {
+    match crate::backend::win::resume_registration(shared) {
+        Ok(()) => "OK\n".to_string(),
+        Err(error) => format!("ERR {error:#}\n"),
+    }
+}
+
+#[cfg(not(windows))]
+fn handle_hotkey_resume(_shared: &SharedState) -> String {
+    "OK\n".to_string()
 }
 
 fn parse_settings(
@@ -366,6 +394,7 @@ mod tests {
 
         assert_eq!(process("hotkey ctrl+shift+f8", &shared), "OK\n");
         assert_eq!(shared.status().hotkey, "ctrl+shift+f8");
+        assert_eq!(shared.status().hotkey_active, "");
     }
 
     #[test]

@@ -50,12 +50,23 @@ pub fn run_foreground(args: RunArgs) -> Result<()> {
 pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     #[cfg(windows)]
     let hotkey = crate::hotkey::Hotkey::parse(&args.hotkey)?;
+    #[cfg(windows)]
+    let hotkey_combo = hotkey.to_string();
+    #[cfg(not(windows))]
+    let hotkey_combo = args.hotkey.clone();
 
     if args.detach {
+        if ipc::send("STATUS").is_ok() {
+            #[cfg(windows)]
+            apply_hotkey_to_running_daemon(&hotkey_combo)?;
+            println!("autoclicker: daemon is running");
+            return Ok(());
+        }
+
         let child_args = vec![
             String::from("daemon"),
             String::from("--hotkey"),
-            args.hotkey.clone(),
+            hotkey_combo.clone(),
         ];
         platform::spawn_daemon(&child_args)?;
 
@@ -72,6 +83,11 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     }
 
     let Some(_lock) = platform::InstanceLock::acquire()? else {
+        #[cfg(windows)]
+        {
+            apply_hotkey_to_running_daemon(&hotkey_combo)?;
+        }
+        #[cfg(not(windows))]
         eprintln!("autoclicker: another daemon is already running");
         return Ok(());
     };
@@ -79,13 +95,13 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     let _timer = platform::timer_resolution();
     let backend = backend::create()?;
     let shared = Arc::new(SharedState::new(Settings::default(), false));
-    shared.set_hotkey(args.hotkey.clone());
+    shared.set_hotkey_requested(hotkey_combo.clone());
     let listener = ipc::create_listener().context("failed to create the control socket")?;
 
     #[cfg(windows)]
     {
         match backend::win::spawn_hotkey(shared.clone(), hotkey) {
-            Ok(()) => eprintln!("autoclicker: daemon ready, global hotkey: {}", args.hotkey),
+            Ok(()) => eprintln!("autoclicker: daemon ready, global hotkey: {hotkey_combo}"),
             Err(error) => eprintln!("autoclicker: warning: {error:#}"),
         }
     }
@@ -107,7 +123,7 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     #[cfg(not(windows))]
     {
         eprintln!(
-            "autoclicker: daemon ready; bind `autoclicker toggle` to a compositor shortcut (niri: Mod+Shift+C). --hotkey is ignored on Linux"
+            "autoclicker: daemon ready; bind `autoclicker toggle` to a compositor shortcut (niri: Mod+Alt+C). --hotkey is ignored on Linux"
         );
     }
 
@@ -118,6 +134,15 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     }
     let _ = server_thread.join();
 
+    Ok(())
+}
+
+#[cfg(windows)]
+fn apply_hotkey_to_running_daemon(combo: &str) -> Result<()> {
+    let response = ipc::send(&format!("HOTKEY {combo}"))
+        .context("another daemon is running, but it did not accept the hotkey change")?;
+    ipc::ensure_ok(&response)?;
+    println!("autoclicker: hotkey set to {combo}");
     Ok(())
 }
 

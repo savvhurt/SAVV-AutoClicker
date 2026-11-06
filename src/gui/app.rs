@@ -65,8 +65,16 @@ pub struct GuiApp {
     actual_cps: f64,
     clicks: u64,
     daemon_error: Option<String>,
+    daemon_hotkey_active: String,
+    daemon_hotkey_paused: bool,
     daemon_hotkey_error: Option<String>,
     daemon_settings: Option<Settings>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    legacy_hotkey_restart_attempted: bool,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    legacy_restart_pending: bool,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    last_hotkey_sync: Option<Instant>,
     notice: Option<String>,
     offline_reason: Option<String>,
     initialized: bool,
@@ -94,8 +102,13 @@ impl GuiApp {
             actual_cps: 0.0,
             clicks: 0,
             daemon_error: None,
+            daemon_hotkey_active: String::new(),
+            daemon_hotkey_paused: false,
             daemon_hotkey_error: None,
             daemon_settings: None,
+            legacy_hotkey_restart_attempted: false,
+            legacy_restart_pending: false,
+            last_hotkey_sync: None,
             notice: loaded.warning,
             offline_reason: None,
             initialized: false,
@@ -117,7 +130,10 @@ impl GuiApp {
                     self.enabled = false;
                     self.actual_cps = 0.0;
                     self.daemon_settings = None;
+                    self.daemon_hotkey_active.clear();
+                    self.daemon_hotkey_paused = false;
                     self.daemon_hotkey_error = None;
+                    self.last_hotkey_sync = None;
                     self.offline_reason = Some(reason);
                     self.initialized = false;
                     self.last_apply_sent = None;
@@ -131,7 +147,10 @@ impl GuiApp {
                     self.enabled = false;
                     self.actual_cps = 0.0;
                     self.daemon_settings = None;
+                    self.daemon_hotkey_active.clear();
+                    self.daemon_hotkey_paused = false;
                     self.daemon_hotkey_error = None;
+                    self.last_hotkey_sync = None;
                     self.offline_reason = None;
                     self.initialized = false;
                     self.last_apply_sent = None;
@@ -164,12 +183,53 @@ impl GuiApp {
         self.actual_cps = status.actual_cps;
         self.clicks = status.clicks;
         self.daemon_error = status.last_error.clone();
+        self.daemon_hotkey_active = status.hotkey_active.clone();
+        self.daemon_hotkey_paused = status.hotkey_paused;
         self.daemon_hotkey_error = status.hotkey_error.clone();
         self.daemon_settings = Some(status.settings);
 
         #[cfg(windows)]
-        if !status.hotkey.is_empty() && status.hotkey != self.hotkey {
-            let _ = self.commands.send(Command::SetHotkey(self.hotkey.clone()));
+        {
+            if self.legacy_restart_pending && !status.hotkey.is_empty() {
+                self.legacy_restart_pending = false;
+                if self
+                    .notice
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with("Демон старой версии"))
+                {
+                    self.notice = None;
+                }
+            }
+
+            if status.hotkey.is_empty() && !self.legacy_hotkey_restart_attempted {
+                // Daemons before the configurable-hotkey release do not report
+                // the `hotkey` field at all and silently ignore HOTKEY.
+                self.legacy_hotkey_restart_attempted = true;
+                self.legacy_restart_pending = true;
+                self.initialized = false;
+                self.daemon_settings = None;
+                self.daemon_hotkey_error = None;
+                let resume = status.enabled.then_some(status.settings);
+                self.notice = Some(
+                    "Демон старой версии: перезапускаю его для настройки горячей клавиши…"
+                        .to_string(),
+                );
+                let _ = self.commands.send(Command::RestartDaemon {
+                    hotkey: self.hotkey.clone(),
+                    resume,
+                });
+                return;
+            }
+
+            if status.hotkey == self.hotkey {
+                self.last_hotkey_sync = None;
+            } else if self
+                .last_hotkey_sync
+                .is_none_or(|sent_at| sent_at.elapsed() >= SYNC_GRACE)
+            {
+                let _ = self.commands.send(Command::SetHotkey(self.hotkey.clone()));
+                self.last_hotkey_sync = Some(Instant::now());
+            }
         }
 
         if first_status {
@@ -250,6 +310,8 @@ impl GuiApp {
         let combo = hotkey.to_string();
         if combo == self.hotkey && self.daemon_hotkey_error.is_none() {
             self.recording_hotkey = false;
+            #[cfg(windows)]
+            let _ = self.commands.send(Command::ResumeHotkey);
             return;
         }
 
@@ -257,6 +319,7 @@ impl GuiApp {
         self.recording_hotkey = false;
         self.daemon_hotkey_error = None;
         self.notice = None;
+        self.last_hotkey_sync = Some(Instant::now());
         let _ = self.commands.send(Command::SetHotkey(combo));
 
         if let Ok(settings) = self.settings.to_settings() {
@@ -266,8 +329,35 @@ impl GuiApp {
         }
     }
 
+    #[cfg(windows)]
+    fn start_hotkey_recording(&mut self) {
+        if self.recording_hotkey {
+            return;
+        }
+        self.recording_hotkey = true;
+        self.notice = None;
+        #[cfg(windows)]
+        let _ = self.commands.send(Command::PauseHotkey);
+    }
+
+    fn stop_hotkey_recording(&mut self, resume: bool) {
+        if !self.recording_hotkey {
+            return;
+        }
+        self.recording_hotkey = false;
+        if resume {
+            #[cfg(windows)]
+            let _ = self.commands.send(Command::ResumeHotkey);
+        }
+    }
+
     fn capture_hotkey(&mut self, ctx: &egui::Context) {
         if !self.recording_hotkey {
+            return;
+        }
+
+        if !ctx.input(|input| input.focused) {
+            self.stop_hotkey_recording(true);
             return;
         }
 
@@ -293,7 +383,7 @@ impl GuiApp {
         };
 
         if key == egui::Key::Escape && !modifiers.ctrl && !modifiers.alt && !modifiers.shift {
-            self.recording_hotkey = false;
+            self.stop_hotkey_recording(true);
             self.notice = None;
             return;
         }
@@ -627,17 +717,27 @@ impl GuiApp {
                 .corner_radius(CornerRadius::same(7))
                 .min_size(Vec2::new(0.0, 23.0));
 
-                if ui.add(button).clicked() {
+                let response = ui.add(button);
+                let response = if self.daemon_hotkey_active.is_empty() {
+                    response
+                } else {
+                    response.on_hover_text(format!(
+                        "Сейчас зарегистрирована: {}",
+                        hotkey_label(&self.daemon_hotkey_active)
+                    ))
+                };
+                if response.clicked() {
                     toggle_recording = true;
                 }
             });
         });
 
         if toggle_recording {
-            self.recording_hotkey = !self.recording_hotkey;
             if self.recording_hotkey {
+                self.stop_hotkey_recording(true);
+            } else {
                 ui.ctx().memory_mut(|memory| memory.stop_text_input());
-                self.notice = None;
+                self.start_hotkey_recording();
             }
         }
 
@@ -658,11 +758,31 @@ impl GuiApp {
                 )
                 .wrap(),
             );
+        } else if self.daemon_hotkey_paused {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new("Регистрация горячей клавиши приостановлена.")
+                    .font(theme::sans(9.5))
+                    .color(theme::MUTED),
+            );
+        } else if !self.daemon_hotkey_active.is_empty() && self.daemon_hotkey_active != self.hotkey
+        {
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(format!(
+                    "Сейчас активна: {}",
+                    hotkey_label(&self.daemon_hotkey_active)
+                ))
+                .font(theme::sans(9.5))
+                .color(theme::WARNING),
+            );
         }
     }
 
     #[cfg(not(windows))]
     fn draw_hotkey(&mut self, ui: &mut Ui) {
+        let bind = self.toggle_bind();
+
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new("Горячая клавиша")
@@ -670,13 +790,31 @@ impl GuiApp {
                     .color(theme::TEXT),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    RichText::new("MOD+SHIFT+C → TOGGLE")
-                        .font(theme::mono(8.0))
-                        .color(theme::MUTED),
+                let response = ui.add(
+                    egui::Label::new(
+                        RichText::new("MOD+ALT+C → TOGGLE")
+                            .font(theme::mono(8.0))
+                            .color(theme::MUTED),
+                    )
+                    .sense(Sense::click()),
                 );
+                let response = response
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(format!("Нажми, чтобы скопировать bind\n{bind}"));
+                if response.clicked() {
+                    ui.ctx().copy_text(bind.clone());
+                }
             });
         });
+    }
+
+    #[cfg(not(windows))]
+    fn toggle_bind(&self) -> String {
+        let executable = std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "autoclicker".to_string());
+        let executable = executable.replace('"', "\\\"");
+        format!("Mod+Alt+C {{ spawn \"{executable}\" \"toggle\"; }}")
     }
 
     fn draw_notices(&self, ui: &mut Ui) {
@@ -870,6 +1008,7 @@ impl egui_software_backend::App for GuiApp {
 
 impl Drop for GuiApp {
     fn drop(&mut self) {
+        let _ = ipc::send("HOTKEY_RESUME");
         let _ = self.commands.send(Command::Shutdown);
         let _ = ipc::send("OFF");
         if let Ok(settings) = self.settings.to_settings() {

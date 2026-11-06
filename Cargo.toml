@@ -38,6 +38,9 @@ egui-winit = { version = "0.34.3", optional = true, default-features = false, fe
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Media",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
@@ -46,11 +49,6 @@ windows = { version = "0.62.2", features = [
 [[bin]]
 name = "autoclicker"
 path = "src/main.rs"
-
-[[bin]]
-name = "autoclicker-gui"
-path = "src/bin/autoclicker-gui.rs"
-required-features = ["gui"]
 
 [lib]
 name = "autoclicker"

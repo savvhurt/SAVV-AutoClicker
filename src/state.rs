@@ -122,6 +122,8 @@ pub struct Status {
     pub actual_cps: f64,
     pub clicks: u64,
     pub hotkey: String,
+    pub hotkey_active: String,
+    pub hotkey_paused: bool,
     pub hotkey_error: Option<String>,
     pub last_error: Option<String>,
 }
@@ -134,6 +136,11 @@ impl Status {
             .unwrap_or("none")
             .replace(['\n', '\r'], " ");
         let hotkey = self.hotkey.replace(['\n', '\r'], " ");
+        let hotkey_active = if self.hotkey_active.is_empty() {
+            String::from("none")
+        } else {
+            self.hotkey_active.replace(['\n', '\r'], " ")
+        };
         let hotkey_error = self
             .hotkey_error
             .as_deref()
@@ -141,7 +148,7 @@ impl Status {
             .replace(['\n', '\r'], " ");
 
         format!(
-            "OK\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nactual_cps: {:.1}\nclicks: {}\nhotkey: {}\nhotkey_error: {}\nerror: {}\n",
+            "OK\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nactual_cps: {:.1}\nclicks: {}\nhotkey: {}\nhotkey_active: {}\nhotkey_paused: {}\nhotkey_error: {}\nerror: {}\n",
             self.enabled,
             format_number(self.settings.cps),
             self.settings.button,
@@ -150,6 +157,8 @@ impl Status {
             self.actual_cps,
             self.clicks,
             hotkey,
+            hotkey_active,
+            self.hotkey_paused,
             hotkey_error,
             error
         )
@@ -175,6 +184,8 @@ impl Status {
         let mut actual_cps = None;
         let mut clicks = None;
         let mut hotkey = None;
+        let mut hotkey_active = None;
+        let mut hotkey_paused = None;
         let mut hotkey_error = None;
         let mut last_error = None;
 
@@ -193,6 +204,15 @@ impl Status {
                 "actual_cps" => actual_cps = Some(value.parse::<f64>()?),
                 "clicks" => clicks = Some(value.parse::<u64>()?),
                 "hotkey" => hotkey = Some(value.to_string()),
+                "hotkey_active" => {
+                    hotkey_active =
+                        Some(if value.is_empty() || value.eq_ignore_ascii_case("none") {
+                            String::new()
+                        } else {
+                            value.to_string()
+                        });
+                }
+                "hotkey_paused" => hotkey_paused = Some(value.parse::<bool>()?),
                 "hotkey_error" => {
                     hotkey_error = if value.is_empty() || value.eq_ignore_ascii_case("none") {
                         None
@@ -225,6 +245,8 @@ impl Status {
                 .ok_or_else(|| anyhow::anyhow!("status is missing `actual_cps`"))?,
             clicks: clicks.ok_or_else(|| anyhow::anyhow!("status is missing `clicks`"))?,
             hotkey: hotkey.unwrap_or_default(),
+            hotkey_active: hotkey_active.unwrap_or_default(),
+            hotkey_paused: hotkey_paused.unwrap_or(false),
             hotkey_error,
             last_error,
         })
@@ -239,6 +261,8 @@ struct Inner {
     clicks: u64,
     click_times: VecDeque<Instant>,
     hotkey: String,
+    hotkey_active: String,
+    hotkey_paused: bool,
     hotkey_error: Option<String>,
     hotkey_reload: bool,
     last_error: Option<String>,
@@ -260,6 +284,8 @@ impl SharedState {
                 clicks: 0,
                 click_times: VecDeque::new(),
                 hotkey: crate::hotkey::DEFAULT.to_string(),
+                hotkey_active: String::new(),
+                hotkey_paused: false,
                 hotkey_error: None,
                 hotkey_reload: false,
                 last_error: None,
@@ -378,11 +404,26 @@ impl SharedState {
         self.inner.lock().unwrap().last_error = Some(message.into());
     }
 
-    pub fn set_hotkey(&self, value: impl Into<String>) {
+    pub fn set_hotkey_requested(&self, value: impl Into<String>) {
         let mut inner = self.inner.lock().unwrap();
         inner.hotkey = value.into();
         inner.hotkey_error = None;
         inner.hotkey_reload = false;
+    }
+
+    pub fn set_hotkey_active(&self, value: impl Into<String>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.hotkey_active = value.into();
+        inner.hotkey_paused = false;
+        inner.hotkey_error = None;
+    }
+
+    pub fn clear_hotkey_active(&self) {
+        self.inner.lock().unwrap().hotkey_active.clear();
+    }
+
+    pub fn set_hotkey_paused(&self, paused: bool) {
+        self.inner.lock().unwrap().hotkey_paused = paused;
     }
 
     pub fn request_hotkey(&self, value: impl Into<String>) {
@@ -436,6 +477,8 @@ impl SharedState {
             },
             clicks: inner.clicks,
             hotkey: inner.hotkey.clone(),
+            hotkey_active: inner.hotkey_active.clone(),
+            hotkey_paused: inner.hotkey_paused,
             hotkey_error: inner.hotkey_error.clone(),
             last_error: inner.last_error.clone(),
         }
@@ -485,6 +528,8 @@ mod tests {
             actual_cps: 99.9,
             clicks: 42,
             hotkey: "ctrl+alt+c".to_string(),
+            hotkey_active: "ctrl+shift+f8".to_string(),
+            hotkey_paused: false,
             hotkey_error: Some("hotkey is already in use".to_string()),
             last_error: Some("press failed: permission denied".to_string()),
         };
@@ -496,6 +541,8 @@ mod tests {
         assert_eq!(parsed.actual_cps, status.actual_cps);
         assert_eq!(parsed.clicks, status.clicks);
         assert_eq!(parsed.hotkey, status.hotkey);
+        assert_eq!(parsed.hotkey_active, status.hotkey_active);
+        assert_eq!(parsed.hotkey_paused, status.hotkey_paused);
         assert_eq!(parsed.hotkey_error, status.hotkey_error);
         assert_eq!(parsed.last_error, status.last_error);
     }
@@ -509,5 +556,34 @@ mod tests {
     #[test]
     fn status_wire_requires_fields() {
         assert!(Status::from_wire("OK\nenabled: true\n").is_err());
+    }
+
+    #[test]
+    fn status_wire_accepts_legacy_daemon_without_hotkey_fields() {
+        let parsed = Status::from_wire(
+            "OK\nenabled: false\ncps: 50\nbutton: left\nhold_ms: 10\njitter_pct: 0\nactual_cps: 0.0\nclicks: 0\nerror: none\n",
+        )
+        .unwrap();
+
+        assert_eq!(parsed.hotkey, "");
+        assert_eq!(parsed.hotkey_active, "");
+        assert!(!parsed.hotkey_paused);
+    }
+
+    #[test]
+    fn requested_and_active_hotkeys_are_separate() {
+        let shared = SharedState::new(Settings::default(), false);
+        shared.set_hotkey_requested("ctrl+alt+c");
+        shared.set_hotkey_active("ctrl+alt+c");
+
+        shared.request_hotkey("ctrl+shift+f8");
+
+        let status = shared.status();
+        assert_eq!(status.hotkey, "ctrl+shift+f8");
+        assert_eq!(status.hotkey_active, "ctrl+alt+c");
+        assert!(status.hotkey_error.is_none());
+
+        shared.set_hotkey_active("ctrl+shift+f8");
+        assert_eq!(shared.status().hotkey_active, "ctrl+shift+f8");
     }
 }

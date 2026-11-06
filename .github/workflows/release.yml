@@ -21,7 +21,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build CLI and GUI
+      - name: Build
         run: cargo build --release --features gui
 
       - name: Package
@@ -29,7 +29,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/autoclicker.exe dist/
-          Copy-Item target/release/autoclicker-gui.exe dist/
           Copy-Item README.md dist/
           Copy-Item assets/fonts/LICENSE.txt dist/FONT-LICENSE.txt
           Compress-Archive -Path dist/* -DestinationPath autoclicker-windows-x86_64.zip
