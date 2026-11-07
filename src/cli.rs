@@ -50,6 +50,14 @@ pub struct ClickArgs {
     /// Randomize each interval by +/- PCT percent
     #[arg(long, default_value_t = 0.0, value_name = "PCT")]
     pub jitter_pct: f64,
+
+    /// Stop after N clicks in the session (0 means unlimited)
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    pub limit: u64,
+
+    /// Wait MS milliseconds before the first click (0 - 10000)
+    #[arg(long, default_value_t = 0.0, value_name = "MS")]
+    pub delay_ms: f64,
 }
 
 #[derive(Args, Debug)]
@@ -70,9 +78,13 @@ pub struct OnArgs {
 
 #[derive(Args, Debug)]
 pub struct DaemonArgs {
-    /// Windows global hotkey, e.g. ctrl+alt+c, ctrl+shift+f8
+    /// Windows global toggle hotkey, e.g. ctrl+alt+c, f8 or shift+space
     #[arg(long, default_value = "ctrl+alt+c", value_name = "COMBO")]
     pub hotkey: String,
+
+    /// Windows global hold-to-click hotkey (empty disables it)
+    #[arg(long, value_name = "COMBO")]
+    pub hold_hotkey: Option<String>,
 
     /// Start the daemon in the background and return
     #[arg(long)]
@@ -98,7 +110,9 @@ impl From<ButtonArg> for Button {
 
 impl ClickArgs {
     pub fn to_settings(&self) -> Result<Settings> {
-        Settings::new(self.cps, self.button.into(), self.hold_ms, self.jitter_pct)
+        Settings::new(self.cps, self.button.into(), self.hold_ms, self.jitter_pct)?
+            .with_limit(self.limit)?
+            .with_delay_ms(self.delay_ms)
     }
 
     pub fn to_wire_command(&self) -> Result<String> {

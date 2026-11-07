@@ -15,13 +15,14 @@ pub enum Command {
     Stop,
     Apply(Settings),
     SetHotkey(String),
+    SetHoldHotkey(String),
     #[cfg(windows)]
     PauseHotkey,
     #[cfg(windows)]
     ResumeHotkey,
-    #[cfg(windows)]
     RestartDaemon {
         hotkey: String,
+        hold_hotkey: String,
         resume: Option<Settings>,
     },
     QuitDaemon,
@@ -30,7 +31,7 @@ pub enum Command {
 
 #[derive(Debug)]
 pub enum Event {
-    Status(Status),
+    Status(Box<Status>),
     Offline(String),
     Error(String),
     Stopped,
@@ -41,14 +42,22 @@ pub struct Worker {
     pub events: Receiver<Event>,
 }
 
+struct Session {
+    online: bool,
+    last_offline: Option<String>,
+    last_status: Option<Status>,
+    hotkey: String,
+    hold_hotkey: String,
+}
+
 impl Worker {
-    pub fn spawn(ctx: egui::Context, hotkey: String) -> std::io::Result<Self> {
+    pub fn spawn(ctx: egui::Context, hotkey: String, hold_hotkey: String) -> std::io::Result<Self> {
         let (command_tx, command_rx) = channel();
         let (event_tx, event_rx) = channel();
 
         thread::Builder::new()
             .name("autoclicker-gui-ipc".to_string())
-            .spawn(move || run(command_rx, event_tx, ctx, hotkey))?;
+            .spawn(move || run(command_rx, event_tx, ctx, hotkey, hold_hotkey))?;
 
         Ok(Self {
             commands: command_tx,
@@ -57,10 +66,20 @@ impl Worker {
     }
 }
 
-fn run(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context, mut hotkey: String) {
-    let mut online = false;
-    let mut last_offline = None;
-    let mut last_status: Option<Status> = None;
+fn run(
+    commands: Receiver<Command>,
+    events: Sender<Event>,
+    ctx: egui::Context,
+    hotkey: String,
+    hold_hotkey: String,
+) {
+    let mut session = Session {
+        online: false,
+        last_offline: None,
+        last_status: None,
+        hotkey,
+        hold_hotkey,
+    };
     let mut next_poll = Instant::now();
 
     loop {
@@ -72,15 +91,7 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context, m
                 break;
             }
             Ok(command) => {
-                handle_command(
-                    command,
-                    &events,
-                    &ctx,
-                    &mut online,
-                    &mut last_offline,
-                    &mut last_status,
-                    &mut hotkey,
-                );
+                handle_command(command, &events, &ctx, &mut session);
                 next_poll = Instant::now() + POLL_INTERVAL;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -88,13 +99,7 @@ fn run(commands: Receiver<Command>, events: Sender<Event>, ctx: egui::Context, m
         }
 
         if Instant::now() >= next_poll {
-            poll(
-                &events,
-                &ctx,
-                &mut online,
-                &mut last_offline,
-                &mut last_status,
-            );
+            poll(&events, &ctx, &mut session);
             next_poll = Instant::now() + POLL_INTERVAL;
         }
     }
@@ -104,17 +109,18 @@ fn handle_command(
     command: Command,
     events: &Sender<Event>,
     ctx: &egui::Context,
-    online: &mut bool,
-    last_offline: &mut Option<String>,
-    last_status: &mut Option<Status>,
-    hotkey: &mut String,
+    session: &mut Session,
 ) {
     let quit_daemon = matches!(command, Command::QuitDaemon);
 
     match command {
         Command::Start(settings) => {
             let command = settings.to_wire_command("ON");
-            match ipc::send_or_spawn_with_hotkey(&command, hotkey) {
+            match ipc::send_or_spawn_with_hotkeys(
+                &command,
+                &session.hotkey,
+                Some(session.hold_hotkey.as_str()),
+            ) {
                 Ok(response) => {
                     if let Err(error) = ipc::ensure_ok(&response) {
                         send_error(
@@ -123,8 +129,8 @@ fn handle_command(
                             format!("Не удалось запустить клики: {error:#}"),
                         );
                     } else {
-                        *online = true;
-                        *last_offline = None;
+                        session.online = true;
+                        session.last_offline = None;
                     }
                 }
                 Err(error) => send_error(
@@ -140,8 +146,8 @@ fn handle_command(
                 Ok(())
             }) {
                 Ok(()) => {
-                    *online = true;
-                    *last_offline = None;
+                    session.online = true;
+                    session.last_offline = None;
                 }
                 Err(error) => {
                     send_error(
@@ -153,14 +159,14 @@ fn handle_command(
             }
         }
         Command::Apply(settings) => {
-            if *online {
+            if session.online {
                 let command = settings.to_wire_command("SET");
                 match ipc::send(&command).and_then(|response| {
                     ipc::ensure_ok(&response)?;
                     Ok(())
                 }) {
                     Ok(()) => {
-                        *last_offline = None;
+                        session.last_offline = None;
                     }
                     Err(error) => {
                         send_error(
@@ -173,15 +179,15 @@ fn handle_command(
             }
         }
         Command::SetHotkey(next) => {
-            *hotkey = next;
-            if *online {
-                let command = format!("HOTKEY {hotkey}");
+            session.hotkey = next;
+            if session.online {
+                let command = format!("HOTKEY {}", session.hotkey);
                 match ipc::send(&command).and_then(|response| {
                     ipc::ensure_ok(&response)?;
                     Ok(())
                 }) {
                     Ok(()) => {
-                        *last_offline = None;
+                        session.last_offline = None;
                     }
                     Err(error) => {
                         send_error(
@@ -193,9 +199,34 @@ fn handle_command(
                 }
             }
         }
+        Command::SetHoldHotkey(next) => {
+            session.hold_hotkey = next;
+            if session.online {
+                let command = if session.hold_hotkey.is_empty() {
+                    String::from("HOLD_HOTKEY none")
+                } else {
+                    format!("HOLD_HOTKEY {}", session.hold_hotkey)
+                };
+                match ipc::send(&command).and_then(|response| {
+                    ipc::ensure_ok(&response)?;
+                    Ok(())
+                }) {
+                    Ok(()) => {
+                        session.last_offline = None;
+                    }
+                    Err(error) => {
+                        send_error(
+                            events,
+                            ctx,
+                            format!("Не удалось применить клавишу удержания: {error:#}"),
+                        );
+                    }
+                }
+            }
+        }
         #[cfg(windows)]
         Command::PauseHotkey => {
-            if *online {
+            if session.online {
                 match ipc::send("HOTKEY_PAUSE").and_then(|response| {
                     ipc::ensure_ok(&response)?;
                     Ok(())
@@ -211,7 +242,7 @@ fn handle_command(
         }
         #[cfg(windows)]
         Command::ResumeHotkey => {
-            if *online {
+            if session.online {
                 match ipc::send("HOTKEY_RESUME").and_then(|response| {
                     ipc::ensure_ok(&response)?;
                     Ok(())
@@ -225,12 +256,13 @@ fn handle_command(
                 }
             }
         }
-        #[cfg(windows)]
         Command::RestartDaemon {
-            hotkey: next,
+            hotkey: next_hotkey,
+            hold_hotkey: next_hold_hotkey,
             resume,
         } => {
-            *hotkey = next;
+            session.hotkey = next_hotkey;
+            session.hold_hotkey = next_hold_hotkey;
             let _ = ipc::send("OFF");
             let _ = ipc::send("QUIT");
 
@@ -248,13 +280,16 @@ fn handle_command(
                 send_error(
                     events,
                     ctx,
-                    "Не удалось остановить старый демон для обновления горячей клавиши."
-                        .to_string(),
+                    "Не удалось остановить старый демон для обновления протокола.".to_string(),
                 );
                 return;
             }
 
-            match ipc::send_or_spawn_with_hotkey("STATUS", hotkey) {
+            match ipc::send_or_spawn_with_hotkeys(
+                "STATUS",
+                &session.hotkey,
+                Some(session.hold_hotkey.as_str()),
+            ) {
                 Ok(response) => {
                     if let Err(error) = ipc::ensure_ok(&response) {
                         send_error(
@@ -277,9 +312,9 @@ fn handle_command(
                             );
                         }
                     }
-                    *online = true;
-                    *last_offline = None;
-                    *last_status = None;
+                    session.online = true;
+                    session.last_offline = None;
+                    session.last_status = None;
                 }
                 Err(error) => send_error(
                     events,
@@ -295,8 +330,8 @@ fn handle_command(
                 Ok(())
             }) {
                 Ok(()) => {
-                    *online = false;
-                    *last_offline = None;
+                    session.online = false;
+                    session.last_offline = None;
                     let _ = events.send(Event::Stopped);
                 }
                 Err(error) => {
@@ -312,26 +347,20 @@ fn handle_command(
     }
 
     if !quit_daemon {
-        poll(events, ctx, online, last_offline, last_status);
+        poll(events, ctx, session);
     }
     ctx.request_repaint();
 }
 
-fn poll(
-    events: &Sender<Event>,
-    ctx: &egui::Context,
-    online: &mut bool,
-    last_offline: &mut Option<String>,
-    last_status: &mut Option<Status>,
-) {
+fn poll(events: &Sender<Event>, ctx: &egui::Context, session: &mut Session) {
     match ipc::send("STATUS") {
         Ok(response) => match Status::from_wire(&response) {
             Ok(status) => {
-                *online = true;
-                *last_offline = None;
-                if last_status.as_ref() != Some(&status) {
-                    *last_status = Some(status.clone());
-                    let _ = events.send(Event::Status(status));
+                session.online = true;
+                session.last_offline = None;
+                if session.last_status.as_ref() != Some(&status) {
+                    session.last_status = Some(status.clone());
+                    let _ = events.send(Event::Status(Box::new(status)));
                     ctx.request_repaint();
                 }
             }
@@ -340,11 +369,11 @@ fn poll(
             }
         },
         Err(error) => {
-            *online = false;
-            *last_status = None;
+            session.online = false;
+            session.last_status = None;
             let message = format!("{error:#}");
-            if last_offline.as_deref() != Some(message.as_str()) {
-                *last_offline = Some(message.clone());
+            if session.last_offline.as_deref() != Some(message.as_str()) {
+                session.last_offline = Some(message.clone());
                 let _ = events.send(Event::Offline(message));
                 ctx.request_repaint();
             }

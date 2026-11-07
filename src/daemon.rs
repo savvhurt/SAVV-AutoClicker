@@ -51,23 +51,41 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     #[cfg(windows)]
     let hotkey = crate::hotkey::Hotkey::parse(&args.hotkey)?;
     #[cfg(windows)]
+    let hold_hotkey = args
+        .hold_hotkey
+        .as_deref()
+        .filter(|combo| !combo.trim().is_empty())
+        .map(crate::hotkey::Hotkey::parse)
+        .transpose()?;
+    #[cfg(windows)]
     let hotkey_combo = hotkey.to_string();
+    #[cfg(windows)]
+    let hold_combo = hold_hotkey
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
     #[cfg(not(windows))]
     let hotkey_combo = args.hotkey.clone();
+    #[cfg(not(windows))]
+    let hold_combo = args.hold_hotkey.clone().unwrap_or_default();
 
     if args.detach {
         if ipc::send("STATUS").is_ok() {
             #[cfg(windows)]
-            apply_hotkey_to_running_daemon(&hotkey_combo)?;
+            apply_hotkey_to_running_daemon(&hotkey_combo, &hold_combo)?;
             println!("autoclicker: daemon is running");
             return Ok(());
         }
 
-        let child_args = vec![
+        let mut child_args = vec![
             String::from("daemon"),
             String::from("--hotkey"),
             hotkey_combo.clone(),
         ];
+        if !hold_combo.is_empty() {
+            child_args.push(String::from("--hold-hotkey"));
+            child_args.push(hold_combo.clone());
+        }
         platform::spawn_daemon(&child_args)?;
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -85,7 +103,7 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     let Some(_lock) = platform::InstanceLock::acquire()? else {
         #[cfg(windows)]
         {
-            apply_hotkey_to_running_daemon(&hotkey_combo)?;
+            apply_hotkey_to_running_daemon(&hotkey_combo, &hold_combo)?;
         }
         #[cfg(not(windows))]
         eprintln!("autoclicker: another daemon is already running");
@@ -96,12 +114,23 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     let backend = backend::create()?;
     let shared = Arc::new(SharedState::new(Settings::default(), false));
     shared.set_hotkey_requested(hotkey_combo.clone());
+    if !hold_combo.is_empty() {
+        shared.set_hold_hotkey_requested(hold_combo.clone());
+    }
     let listener = ipc::create_listener().context("failed to create the control socket")?;
 
     #[cfg(windows)]
     {
-        match backend::win::spawn_hotkey(shared.clone(), hotkey) {
-            Ok(()) => eprintln!("autoclicker: daemon ready, global hotkey: {hotkey_combo}"),
+        match backend::win::spawn_hotkey(shared.clone(), hotkey, hold_hotkey) {
+            Ok(()) => {
+                if hold_combo.is_empty() {
+                    eprintln!("autoclicker: daemon ready, global hotkey: {hotkey_combo}");
+                } else {
+                    eprintln!(
+                        "autoclicker: daemon ready, global hotkeys: {hotkey_combo} / hold {hold_combo}"
+                    );
+                }
+            }
             Err(error) => eprintln!("autoclicker: warning: {error:#}"),
         }
     }
@@ -138,11 +167,25 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn apply_hotkey_to_running_daemon(combo: &str) -> Result<()> {
+fn apply_hotkey_to_running_daemon(combo: &str, hold_combo: &str) -> Result<()> {
     let response = ipc::send(&format!("HOTKEY {combo}"))
         .context("another daemon is running, but it did not accept the hotkey change")?;
     ipc::ensure_ok(&response)?;
     println!("autoclicker: hotkey set to {combo}");
+
+    let response = ipc::send(&format!(
+        "HOLD_HOTKEY {}",
+        if hold_combo.is_empty() {
+            "none"
+        } else {
+            hold_combo
+        }
+    ))
+    .context("another daemon is running, but it did not accept the hold hotkey change")?;
+    ipc::ensure_ok(&response)?;
+    if !hold_combo.is_empty() {
+        println!("autoclicker: hold hotkey set to {hold_combo}");
+    }
     Ok(())
 }
 

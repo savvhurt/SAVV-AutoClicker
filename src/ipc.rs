@@ -76,19 +76,31 @@ pub fn ensure_ok(response: &str) -> Result<()> {
 }
 
 pub fn send_or_spawn(command: &str) -> Result<String> {
-    send_or_spawn_with_hotkey(command, crate::hotkey::DEFAULT)
+    send_or_spawn_with_hotkeys(command, crate::hotkey::DEFAULT, None)
 }
 
 pub fn send_or_spawn_with_hotkey(command: &str, hotkey: &str) -> Result<String> {
+    send_or_spawn_with_hotkeys(command, hotkey, None)
+}
+
+pub fn send_or_spawn_with_hotkeys(
+    command: &str,
+    hotkey: &str,
+    hold_hotkey: Option<&str>,
+) -> Result<String> {
     if let Ok(response) = send(command) {
         return Ok(response);
     }
 
-    let args = vec![
+    let mut args = vec![
         String::from("daemon"),
         String::from("--hotkey"),
         hotkey.to_string(),
     ];
+    if let Some(hold_hotkey) = hold_hotkey.filter(|combo| !combo.trim().is_empty()) {
+        args.push(String::from("--hold-hotkey"));
+        args.push(hold_hotkey.to_string());
+    }
     platform::spawn_daemon(&args).context("failed to start the autoclicker daemon")?;
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -177,6 +189,7 @@ fn process(line: &str, shared: &SharedState) -> String {
         "ON" => handle_on(parts, shared),
         "SET" => handle_set(parts, shared),
         "HOTKEY" => handle_hotkey(parts, shared),
+        "HOLD_HOTKEY" => handle_hold_hotkey(parts, shared),
         "HOTKEY_PAUSE" => handle_hotkey_pause(shared),
         "HOTKEY_RESUME" => handle_hotkey_resume(shared),
         "OFF" => {
@@ -212,7 +225,7 @@ fn handle_set(parts: std::str::SplitWhitespace<'_>, shared: &SharedState) -> Str
 fn handle_hotkey(parts: std::str::SplitWhitespace<'_>, shared: &SharedState) -> String {
     let combo = parts.collect::<Vec<_>>().join(" ");
     if combo.is_empty() {
-        return "ERR HOTKEY requires: ctrl+alt+c\n".to_string();
+        return "ERR HOTKEY requires a key combination\n".to_string();
     }
 
     let hotkey = match crate::hotkey::Hotkey::parse(&combo) {
@@ -233,6 +246,34 @@ fn handle_hotkey(parts: std::str::SplitWhitespace<'_>, shared: &SharedState) -> 
     {
         let _ = hotkey;
         shared.set_hotkey_requested(canonical);
+        "OK\n".to_string()
+    }
+}
+
+fn handle_hold_hotkey(parts: std::str::SplitWhitespace<'_>, shared: &SharedState) -> String {
+    let combo = parts.collect::<Vec<_>>().join(" ");
+    let disabled = combo.is_empty() || combo.eq_ignore_ascii_case("none");
+    let canonical = if disabled {
+        String::new()
+    } else {
+        match crate::hotkey::Hotkey::parse(&combo) {
+            Ok(hotkey) => hotkey.to_string(),
+            Err(error) => return format!("ERR {error}\n"),
+        }
+    };
+
+    #[cfg(windows)]
+    {
+        let value = (!canonical.is_empty()).then_some(canonical.as_str());
+        match crate::backend::win::request_hold_hotkey(shared, value) {
+            Ok(()) => "OK\n".to_string(),
+            Err(error) => format!("ERR {error:#}\n"),
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        shared.set_hold_hotkey_requested(canonical);
         "OK\n".to_string()
     }
 }
@@ -297,11 +338,27 @@ fn parse_settings(
         .parse::<f64>()
         .map_err(|_| "ERR invalid jitter_pct\n".to_string())?;
 
+    let limit = match parts.next() {
+        Some(value) => value
+            .parse::<u64>()
+            .map_err(|_| "ERR invalid limit\n".to_string())?,
+        None => 0,
+    };
+    let delay_ms = match parts.next() {
+        Some(value) => value
+            .parse::<f64>()
+            .map_err(|_| "ERR invalid delay_ms\n".to_string())?,
+        None => 0.0,
+    };
+
     if parts.next().is_some() {
         return Err(format!("ERR too many arguments for {command}\n"));
     }
 
-    Settings::new(cps, button, hold_ms, jitter_pct).map_err(|error| format!("ERR {error}\n"))
+    Settings::new(cps, button, hold_ms, jitter_pct)
+        .and_then(|settings| settings.with_limit(limit))
+        .and_then(|settings| settings.with_delay_ms(delay_ms))
+        .map_err(|error| format!("ERR {error}\n"))
 }
 
 #[cfg(test)]
@@ -364,12 +421,24 @@ mod tests {
     }
 
     #[test]
+    fn set_command_accepts_optional_limit_and_delay() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert_eq!(process("SET 125 right 5 10 42 300", &shared), "OK\n");
+
+        let status = shared.status();
+        assert_eq!(status.settings.limit, 42);
+        assert!((status.settings.delay_ms() - 300.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn invalid_on_command_is_rejected() {
         let shared = SharedState::new(Settings::default(), false);
 
         assert!(process("ON 0 left 10 0", &shared).starts_with("ERR "));
         assert!(process("ON 50 left 10", &shared).starts_with("ERR "));
         assert!(process("ON 50 side 10 0", &shared).starts_with("ERR "));
+        assert!(process("ON 50 left 10 0 1 2 3", &shared).starts_with("ERR "));
         assert!(!shared.status().enabled);
     }
 
@@ -401,13 +470,34 @@ mod tests {
     fn invalid_hotkey_is_rejected_without_changing_state() {
         let shared = SharedState::new(Settings::default(), false);
 
-        let response = process("HOTKEY c", &shared);
+        let response = process("HOTKEY ctrl", &shared);
         assert!(response.starts_with("ERR "));
         assert_eq!(shared.status().hotkey, crate::hotkey::DEFAULT);
 
         let response = process("HOTKEY", &shared);
         assert!(response.starts_with("ERR "));
         assert_eq!(shared.status().hotkey, crate::hotkey::DEFAULT);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn single_key_hotkey_is_accepted() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert_eq!(process("HOTKEY f8", &shared), "OK\n");
+        assert_eq!(shared.status().hotkey, "f8");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn hold_hotkey_can_be_set_and_cleared() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert_eq!(process("HOLD_HOTKEY alt+space", &shared), "OK\n");
+        assert_eq!(shared.status().hold_hotkey, "alt+space");
+
+        assert_eq!(process("HOLD_HOTKEY none", &shared), "OK\n");
+        assert_eq!(shared.status().hold_hotkey, "");
     }
 
     #[test]

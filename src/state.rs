@@ -6,6 +6,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 
+pub const PROTOCOL: u32 = 2;
+pub const MAX_LIMIT: u64 = 1_000_000_000;
+pub const MAX_DELAY_MS: f64 = 10_000.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
     Left,
@@ -42,12 +46,46 @@ impl FromStr for Button {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    Manual,
+    Limit,
+    Hold,
+    Quit,
+    Error,
+}
+
+impl StopReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Limit => "limit",
+            Self::Hold => "hold",
+            Self::Quit => "quit",
+            Self::Error => "error",
+        }
+    }
+
+    fn from_wire(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "manual" => Some(Self::Manual),
+            "limit" => Some(Self::Limit),
+            "hold" => Some(Self::Hold),
+            "quit" => Some(Self::Quit),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     pub cps: f64,
     pub button: Button,
     pub hold: Duration,
     pub jitter_pct: f64,
+    pub limit: u64,
+    pub delay: Duration,
 }
 
 impl Default for Settings {
@@ -57,6 +95,8 @@ impl Default for Settings {
             button: Button::Left,
             hold: Duration::from_millis(10),
             jitter_pct: 0.0,
+            limit: 0,
+            delay: Duration::ZERO,
         }
     }
 }
@@ -78,21 +118,55 @@ impl Settings {
             button,
             hold: Duration::from_secs_f64(hold_ms / 1000.0),
             jitter_pct,
+            limit: 0,
+            delay: Duration::ZERO,
         })
+    }
+
+    pub fn with_limit(mut self, limit: u64) -> Result<Self> {
+        if limit > MAX_LIMIT {
+            bail!("limit must be between 0 and {MAX_LIMIT} (0 means unlimited)");
+        }
+        self.limit = limit;
+        Ok(self)
+    }
+
+    pub fn with_delay_ms(mut self, delay_ms: f64) -> Result<Self> {
+        if !delay_ms.is_finite() || !(0.0..=MAX_DELAY_MS).contains(&delay_ms) {
+            bail!("delay-ms must be between 0 and {MAX_DELAY_MS}");
+        }
+        self.delay = Duration::from_secs_f64(delay_ms / 1000.0);
+        Ok(self)
     }
 
     pub fn hold_ms(&self) -> f64 {
         self.hold.as_secs_f64() * 1000.0
     }
 
+    pub fn delay_ms(&self) -> f64 {
+        self.delay.as_secs_f64() * 1000.0
+    }
+
     pub fn to_wire_command(&self, command: &str) -> String {
-        format!(
+        let mut wire = format!(
             "{command} {} {} {} {}",
             format_number(self.cps),
             self.button,
             format_number(self.hold_ms()),
             format_number(self.jitter_pct)
-        )
+        );
+
+        // Keep the legacy four-field command when the optional features are
+        // unused so an older daemon can still handle basic `on`/`set` calls.
+        if self.limit != 0 || !self.delay.is_zero() {
+            wire.push_str(&format!(
+                " {} {}",
+                self.limit,
+                format_number(self.delay_ms())
+            ));
+        }
+
+        wire
     }
 }
 
@@ -117,12 +191,20 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Status {
+    pub protocol: u32,
     pub enabled: bool,
     pub settings: Settings,
     pub actual_cps: f64,
     pub clicks: u64,
+    pub session_clicks: u64,
+    pub starting: bool,
+    pub delay_left_ms: u64,
+    pub stop_reason: Option<StopReason>,
     pub hotkey: String,
     pub hotkey_active: String,
+    pub hold_hotkey: String,
+    pub hold_hotkey_active: String,
+    pub hold_active: bool,
     pub hotkey_paused: bool,
     pub hotkey_error: Option<String>,
     pub last_error: Option<String>,
@@ -141,23 +223,40 @@ impl Status {
         } else {
             self.hotkey_active.replace(['\n', '\r'], " ")
         };
+        let hold_hotkey = self.hold_hotkey.replace(['\n', '\r'], " ");
+        let hold_hotkey_active = if self.hold_hotkey_active.is_empty() {
+            String::from("none")
+        } else {
+            self.hold_hotkey_active.replace(['\n', '\r'], " ")
+        };
         let hotkey_error = self
             .hotkey_error
             .as_deref()
             .unwrap_or("none")
             .replace(['\n', '\r'], " ");
+        let stop_reason = self.stop_reason.map(StopReason::as_str).unwrap_or("none");
 
         format!(
-            "OK\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nactual_cps: {:.1}\nclicks: {}\nhotkey: {}\nhotkey_active: {}\nhotkey_paused: {}\nhotkey_error: {}\nerror: {}\n",
+            "OK\nprotocol: {}\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nlimit: {}\ndelay_ms: {}\nactual_cps: {:.1}\nclicks: {}\nsession_clicks: {}\nstarting: {}\ndelay_left_ms: {}\nstop_reason: {}\nhotkey: {}\nhotkey_active: {}\nhold_hotkey: {}\nhold_hotkey_active: {}\nhold_active: {}\nhotkey_paused: {}\nhotkey_error: {}\nerror: {}\n",
+            self.protocol,
             self.enabled,
             format_number(self.settings.cps),
             self.settings.button,
             format_number(self.settings.hold_ms()),
             format_number(self.settings.jitter_pct),
+            self.settings.limit,
+            format_number(self.settings.delay_ms()),
             self.actual_cps,
             self.clicks,
+            self.session_clicks,
+            self.starting,
+            self.delay_left_ms,
+            stop_reason,
             hotkey,
             hotkey_active,
+            hold_hotkey,
+            hold_hotkey_active,
+            self.hold_active,
             self.hotkey_paused,
             hotkey_error,
             error
@@ -176,15 +275,25 @@ impl Status {
             bail!("unexpected daemon response: {}", response.trim());
         };
 
+        let mut protocol = None;
         let mut enabled = None;
         let mut cps = None;
         let mut button = None;
         let mut hold_ms = None;
         let mut jitter_pct = None;
+        let mut limit = None;
+        let mut delay_ms = None;
         let mut actual_cps = None;
         let mut clicks = None;
+        let mut session_clicks = None;
+        let mut starting = None;
+        let mut delay_left_ms = None;
+        let mut stop_reason = None;
         let mut hotkey = None;
         let mut hotkey_active = None;
+        let mut hold_hotkey = None;
+        let mut hold_hotkey_active = None;
+        let mut hold_active = None;
         let mut hotkey_paused = None;
         let mut hotkey_error = None;
         let mut last_error = None;
@@ -196,13 +305,26 @@ impl Status {
             let value = value.trim();
 
             match key.trim() {
+                "protocol" => protocol = Some(value.parse::<u32>()?),
                 "enabled" => enabled = Some(value.parse::<bool>()?),
                 "cps" => cps = Some(value.parse::<f64>()?),
                 "button" => button = Some(value.parse::<Button>()?),
                 "hold_ms" => hold_ms = Some(value.parse::<f64>()?),
                 "jitter_pct" => jitter_pct = Some(value.parse::<f64>()?),
+                "limit" => limit = Some(value.parse::<u64>()?),
+                "delay_ms" => delay_ms = Some(value.parse::<f64>()?),
                 "actual_cps" => actual_cps = Some(value.parse::<f64>()?),
                 "clicks" => clicks = Some(value.parse::<u64>()?),
+                "session_clicks" => session_clicks = Some(value.parse::<u64>()?),
+                "starting" => starting = Some(value.parse::<bool>()?),
+                "delay_left_ms" => delay_left_ms = Some(value.parse::<u64>()?),
+                "stop_reason" => {
+                    stop_reason = if value.eq_ignore_ascii_case("none") {
+                        None
+                    } else {
+                        StopReason::from_wire(value)
+                    };
+                }
                 "hotkey" => hotkey = Some(value.to_string()),
                 "hotkey_active" => {
                     hotkey_active =
@@ -212,6 +334,16 @@ impl Status {
                             value.to_string()
                         });
                 }
+                "hold_hotkey" => hold_hotkey = Some(value.to_string()),
+                "hold_hotkey_active" => {
+                    hold_hotkey_active =
+                        Some(if value.is_empty() || value.eq_ignore_ascii_case("none") {
+                            String::new()
+                        } else {
+                            value.to_string()
+                        });
+                }
+                "hold_active" => hold_active = Some(value.parse::<bool>()?),
                 "hotkey_paused" => hotkey_paused = Some(value.parse::<bool>()?),
                 "hotkey_error" => {
                     hotkey_error = if value.is_empty() || value.eq_ignore_ascii_case("none") {
@@ -236,16 +368,26 @@ impl Status {
             button.ok_or_else(|| anyhow::anyhow!("status is missing `button`"))?,
             hold_ms.ok_or_else(|| anyhow::anyhow!("status is missing `hold_ms`"))?,
             jitter_pct.ok_or_else(|| anyhow::anyhow!("status is missing `jitter_pct`"))?,
-        )?;
+        )?
+        .with_limit(limit.unwrap_or(0))?
+        .with_delay_ms(delay_ms.unwrap_or(0.0))?;
 
         Ok(Self {
+            protocol: protocol.unwrap_or(0),
             enabled: enabled.ok_or_else(|| anyhow::anyhow!("status is missing `enabled`"))?,
             settings,
             actual_cps: actual_cps
                 .ok_or_else(|| anyhow::anyhow!("status is missing `actual_cps`"))?,
             clicks: clicks.ok_or_else(|| anyhow::anyhow!("status is missing `clicks`"))?,
+            session_clicks: session_clicks.unwrap_or(0),
+            starting: starting.unwrap_or(false),
+            delay_left_ms: delay_left_ms.unwrap_or(0),
+            stop_reason,
             hotkey: hotkey.unwrap_or_default(),
             hotkey_active: hotkey_active.unwrap_or_default(),
+            hold_hotkey: hold_hotkey.unwrap_or_default(),
+            hold_hotkey_active: hold_hotkey_active.unwrap_or_default(),
+            hold_active: hold_active.unwrap_or(false),
             hotkey_paused: hotkey_paused.unwrap_or(false),
             hotkey_error,
             last_error,
@@ -259,12 +401,19 @@ struct Inner {
     settings: Settings,
     version: u64,
     clicks: u64,
+    session_clicks: u64,
     click_times: VecDeque<Instant>,
+    delay_until: Option<Instant>,
+    stop_reason: Option<StopReason>,
+    hold_active: bool,
     hotkey: String,
     hotkey_active: String,
+    hold_hotkey: String,
+    hold_hotkey_active: String,
     hotkey_paused: bool,
     hotkey_error: Option<String>,
     hotkey_reload: bool,
+    hold_hotkey_reload: bool,
     last_error: Option<String>,
 }
 
@@ -275,6 +424,12 @@ pub struct SharedState {
 
 impl SharedState {
     pub fn new(settings: Settings, enabled: bool) -> Self {
+        let delay_until = if enabled && !settings.delay.is_zero() {
+            Some(Instant::now() + settings.delay)
+        } else {
+            None
+        };
+
         Self {
             inner: Mutex::new(Inner {
                 enabled,
@@ -282,12 +437,19 @@ impl SharedState {
                 settings,
                 version: 0,
                 clicks: 0,
+                session_clicks: 0,
                 click_times: VecDeque::new(),
+                delay_until,
+                stop_reason: None,
+                hold_active: false,
                 hotkey: crate::hotkey::DEFAULT.to_string(),
                 hotkey_active: String::new(),
+                hold_hotkey: String::new(),
+                hold_hotkey_active: String::new(),
                 hotkey_paused: false,
                 hotkey_error: None,
                 hotkey_reload: false,
+                hold_hotkey_reload: false,
                 last_error: None,
             }),
             changed: Condvar::new(),
@@ -307,13 +469,13 @@ impl SharedState {
     pub fn toggle(&self) -> bool {
         let enabled = {
             let mut inner = self.inner.lock().unwrap();
-            inner.enabled = !inner.enabled;
-            inner.version = inner.version.wrapping_add(1);
-            inner.click_times.clear();
             if inner.enabled {
-                inner.last_error = None;
+                Self::stop_locked(&mut inner, StopReason::Manual);
+                false
+            } else {
+                Self::begin_session_locked(&mut inner);
+                true
             }
-            inner.enabled
         };
         self.changed.notify_all();
         enabled
@@ -323,10 +485,7 @@ impl SharedState {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.settings = settings;
-            inner.enabled = true;
-            inner.version = inner.version.wrapping_add(1);
-            inner.click_times.clear();
-            inner.last_error = None;
+            Self::begin_session_locked(&mut inner);
         }
         self.changed.notify_all();
     }
@@ -337,6 +496,13 @@ impl SharedState {
             inner.settings = settings;
             inner.version = inner.version.wrapping_add(1);
             inner.click_times.clear();
+
+            if inner.enabled
+                && inner.settings.limit > 0
+                && inner.session_clicks >= inner.settings.limit
+            {
+                Self::stop_locked(&mut inner, StopReason::Limit);
+            }
         }
         self.changed.notify_all();
     }
@@ -344,20 +510,75 @@ impl SharedState {
     pub fn off(&self) {
         {
             let mut inner = self.inner.lock().unwrap();
-            inner.enabled = false;
-            inner.version = inner.version.wrapping_add(1);
-            inner.click_times.clear();
+            Self::stop_locked(&mut inner, StopReason::Manual);
         }
         self.changed.notify_all();
+    }
+
+    pub fn stop(&self, reason: StopReason) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            Self::stop_locked(&mut inner, reason);
+        }
+        self.changed.notify_all();
+    }
+
+    fn stop_locked(inner: &mut Inner, reason: StopReason) {
+        inner.enabled = false;
+        inner.delay_until = None;
+        inner.stop_reason = Some(reason);
+        inner.hold_active = false;
+        inner.version = inner.version.wrapping_add(1);
+        inner.click_times.clear();
+    }
+
+    fn begin_session_locked(inner: &mut Inner) {
+        inner.enabled = true;
+        inner.version = inner.version.wrapping_add(1);
+        inner.session_clicks = 0;
+        inner.click_times.clear();
+        inner.delay_until = if inner.settings.delay.is_zero() {
+            None
+        } else {
+            Some(Instant::now() + inner.settings.delay)
+        };
+        inner.stop_reason = None;
+        inner.hold_active = false;
+        inner.last_error = None;
     }
 
     pub fn quit(&self) {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.quit = true;
-            inner.enabled = false;
-            inner.version = inner.version.wrapping_add(1);
-            inner.click_times.clear();
+            Self::stop_locked(&mut inner, StopReason::Quit);
+        }
+        self.changed.notify_all();
+    }
+
+    pub fn hold_press(&self) -> bool {
+        let started = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.quit || inner.enabled {
+                inner.hold_active = false;
+                false
+            } else {
+                Self::begin_session_locked(&mut inner);
+                inner.hold_active = true;
+                true
+            }
+        };
+        self.changed.notify_all();
+        started
+    }
+
+    pub fn hold_release(&self) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if !inner.hold_active {
+                return;
+            }
+            Self::stop_locked(&mut inner, StopReason::Hold);
         }
         self.changed.notify_all();
     }
@@ -385,10 +606,36 @@ impl SharedState {
         !inner.enabled || inner.quit || inner.version != version
     }
 
-    pub fn record_click(&self) {
+    /// Wait until the start delay for the current session has elapsed. The
+    /// delay survives settings changes, so moving a slider does not restart it.
+    pub fn wait_for_start(&self, version: u64) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        loop {
+            if !inner.enabled || inner.quit || inner.version != version {
+                return false;
+            }
+
+            let Some(until) = inner.delay_until else {
+                return true;
+            };
+
+            let now = Instant::now();
+            if now >= until {
+                inner.delay_until = None;
+                return true;
+            }
+
+            let wait = (until - now).min(Duration::from_millis(50));
+            let (guard, _) = self.changed.wait_timeout(inner, wait).unwrap();
+            inner = guard;
+        }
+    }
+
+    pub fn record_click(&self) -> bool {
         let now = Instant::now();
         let mut inner = self.inner.lock().unwrap();
         inner.clicks = inner.clicks.saturating_add(1);
+        inner.session_clicks = inner.session_clicks.saturating_add(1);
         inner.click_times.push_back(now);
 
         while let Some(front) = inner.click_times.front() {
@@ -398,6 +645,8 @@ impl SharedState {
                 break;
             }
         }
+
+        inner.settings.limit > 0 && inner.session_clicks >= inner.settings.limit
     }
 
     pub fn set_error(&self, message: impl Into<String>) {
@@ -411,6 +660,10 @@ impl SharedState {
         inner.hotkey_reload = false;
     }
 
+    pub fn hotkey_requested(&self) -> String {
+        self.inner.lock().unwrap().hotkey.clone()
+    }
+
     pub fn set_hotkey_active(&self, value: impl Into<String>) {
         let mut inner = self.inner.lock().unwrap();
         inner.hotkey_active = value.into();
@@ -420,6 +673,28 @@ impl SharedState {
 
     pub fn clear_hotkey_active(&self) {
         self.inner.lock().unwrap().hotkey_active.clear();
+    }
+
+    pub fn set_hold_hotkey_requested(&self, value: impl Into<String>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.hold_hotkey = value.into();
+        inner.hotkey_error = None;
+        inner.hold_hotkey_reload = false;
+    }
+
+    pub fn hold_hotkey_requested(&self) -> String {
+        self.inner.lock().unwrap().hold_hotkey.clone()
+    }
+
+    pub fn set_hold_hotkey_active(&self, value: impl Into<String>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.hold_hotkey_active = value.into();
+        inner.hotkey_paused = false;
+        inner.hotkey_error = None;
+    }
+
+    pub fn clear_hold_hotkey_active(&self) {
+        self.inner.lock().unwrap().hold_hotkey_active.clear();
     }
 
     pub fn set_hotkey_paused(&self, paused: bool) {
@@ -433,14 +708,33 @@ impl SharedState {
         inner.hotkey_reload = true;
     }
 
+    pub fn request_hold_hotkey(&self, value: impl Into<String>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.hold_hotkey = value.into();
+        inner.hotkey_error = None;
+        inner.hold_hotkey_reload = true;
+    }
+
     #[cfg(windows)]
     pub(crate) fn take_hotkey_request(&self) -> Option<String> {
         let mut inner = self.inner.lock().unwrap();
-        if !inner.hotkey_reload {
-            return None;
+        if inner.hotkey_reload {
+            inner.hotkey_reload = false;
+            Some(inner.hotkey.clone())
+        } else {
+            None
         }
-        inner.hotkey_reload = false;
-        Some(inner.hotkey.clone())
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn take_hold_hotkey_request(&self) -> Option<String> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.hold_hotkey_reload {
+            inner.hold_hotkey_reload = false;
+            Some(inner.hold_hotkey.clone())
+        } else {
+            None
+        }
     }
 
     pub fn set_hotkey_error(&self, message: impl Into<String>) {
@@ -467,17 +761,31 @@ impl SharedState {
             }
         }
 
+        let starting = inner.enabled && inner.delay_until.is_some();
+        let delay_left_ms = inner
+            .delay_until
+            .map(|until| until.saturating_duration_since(now).as_millis() as u64)
+            .unwrap_or(0);
+
         Status {
+            protocol: PROTOCOL,
             enabled: inner.enabled,
             settings: inner.settings,
-            actual_cps: if inner.enabled {
+            actual_cps: if inner.enabled && !starting {
                 inner.click_times.len() as f64
             } else {
                 0.0
             },
             clicks: inner.clicks,
+            session_clicks: inner.session_clicks,
+            starting,
+            delay_left_ms,
+            stop_reason: inner.stop_reason,
             hotkey: inner.hotkey.clone(),
             hotkey_active: inner.hotkey_active.clone(),
+            hold_hotkey: inner.hold_hotkey.clone(),
+            hold_hotkey_active: inner.hold_hotkey_active.clone(),
+            hold_active: inner.hold_active,
             hotkey_paused: inner.hotkey_paused,
             hotkey_error: inner.hotkey_error.clone(),
             last_error: inner.last_error.clone(),
@@ -496,6 +804,22 @@ mod tests {
         assert!(Settings::new(50.0, Button::Left, 0.0, 0.0).is_err());
         assert!(Settings::new(50.0, Button::Left, 10.0, 101.0).is_err());
         assert!(Settings::new(f64::NAN, Button::Left, 10.0, 0.0).is_err());
+        assert!(Settings::default().with_limit(MAX_LIMIT + 1).is_err());
+        assert!(
+            Settings::default()
+                .with_delay_ms(MAX_DELAY_MS + 1.0)
+                .is_err()
+        );
+        assert!(Settings::default().with_delay_ms(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn optional_settings_extend_the_wire_command() {
+        let base = Settings::new(125.0, Button::Left, 10.0, 0.0).unwrap();
+        assert_eq!(base.to_wire_command("ON"), "ON 125 left 10 0");
+
+        let extended = base.with_limit(500).unwrap().with_delay_ms(250.0).unwrap();
+        assert_eq!(extended.to_wire_command("ON"), "ON 125 left 10 0 500 250");
     }
 
     #[test]
@@ -506,6 +830,7 @@ mod tests {
         assert!(shared.status().enabled);
         shared.off();
         assert!(!shared.status().enabled);
+        assert_eq!(shared.status().stop_reason, Some(StopReason::Manual));
     }
 
     #[test]
@@ -522,13 +847,27 @@ mod tests {
 
     #[test]
     fn status_wire_round_trips() {
+        let settings = Settings::new(123.456, Button::Middle, 7.25, 33.5)
+            .unwrap()
+            .with_limit(500)
+            .unwrap()
+            .with_delay_ms(250.0)
+            .unwrap();
         let status = Status {
+            protocol: PROTOCOL,
             enabled: true,
-            settings: Settings::new(123.456, Button::Middle, 7.25, 33.5).unwrap(),
+            settings,
             actual_cps: 99.9,
             clicks: 42,
+            session_clicks: 17,
+            starting: true,
+            delay_left_ms: 123,
+            stop_reason: Some(StopReason::Limit),
             hotkey: "ctrl+alt+c".to_string(),
             hotkey_active: "ctrl+shift+f8".to_string(),
+            hold_hotkey: "f9".to_string(),
+            hold_hotkey_active: "f9".to_string(),
+            hold_active: true,
             hotkey_paused: false,
             hotkey_error: Some("hotkey is already in use".to_string()),
             last_error: Some("press failed: permission denied".to_string()),
@@ -536,15 +875,7 @@ mod tests {
 
         let parsed = Status::from_wire(&status.to_wire()).unwrap();
 
-        assert_eq!(parsed.enabled, status.enabled);
-        assert_eq!(parsed.settings, status.settings);
-        assert_eq!(parsed.actual_cps, status.actual_cps);
-        assert_eq!(parsed.clicks, status.clicks);
-        assert_eq!(parsed.hotkey, status.hotkey);
-        assert_eq!(parsed.hotkey_active, status.hotkey_active);
-        assert_eq!(parsed.hotkey_paused, status.hotkey_paused);
-        assert_eq!(parsed.hotkey_error, status.hotkey_error);
-        assert_eq!(parsed.last_error, status.last_error);
+        assert_eq!(parsed, status);
     }
 
     #[test]
@@ -559,15 +890,21 @@ mod tests {
     }
 
     #[test]
-    fn status_wire_accepts_legacy_daemon_without_hotkey_fields() {
+    fn status_wire_accepts_legacy_daemon_without_new_fields() {
         let parsed = Status::from_wire(
             "OK\nenabled: false\ncps: 50\nbutton: left\nhold_ms: 10\njitter_pct: 0\nactual_cps: 0.0\nclicks: 0\nerror: none\n",
         )
         .unwrap();
 
+        assert_eq!(parsed.protocol, 0);
         assert_eq!(parsed.hotkey, "");
         assert_eq!(parsed.hotkey_active, "");
+        assert_eq!(parsed.settings.limit, 0);
+        assert_eq!(parsed.settings.delay, Duration::ZERO);
+        assert_eq!(parsed.session_clicks, 0);
+        assert!(!parsed.starting);
         assert!(!parsed.hotkey_paused);
+        assert!(!parsed.hold_active);
     }
 
     #[test]
@@ -585,5 +922,46 @@ mod tests {
 
         shared.set_hotkey_active("ctrl+shift+f8");
         assert_eq!(shared.status().hotkey_active, "ctrl+shift+f8");
+    }
+
+    #[test]
+    fn hold_only_stops_clicks_it_started() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        shared.hold_press();
+        assert!(shared.status().enabled);
+        assert!(shared.status().hold_active);
+
+        shared.hold_release();
+        assert!(!shared.status().enabled);
+        assert_eq!(shared.status().stop_reason, Some(StopReason::Hold));
+
+        assert!(shared.toggle());
+        shared.hold_press();
+        assert!(shared.status().enabled);
+        assert!(!shared.status().hold_active);
+
+        shared.hold_release();
+        assert!(shared.status().enabled);
+    }
+
+    #[test]
+    fn delay_and_limit_are_exposed_in_status() {
+        let settings = Settings::default()
+            .with_limit(10)
+            .unwrap()
+            .with_delay_ms(300.0)
+            .unwrap();
+        let shared = SharedState::new(settings, true);
+
+        let status = shared.status();
+        assert!(status.starting);
+        assert!(status.delay_left_ms > 0);
+        assert_eq!(status.session_clicks, 0);
+
+        assert!(shared.wait_for_start(shared.snapshot().version));
+        let status = shared.status();
+        assert!(!status.starting);
+        assert_eq!(status.delay_left_ms, 0);
     }
 }

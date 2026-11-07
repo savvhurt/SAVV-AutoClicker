@@ -3,7 +3,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::backend::Backend;
-use crate::state::{Button, Settings, SharedState, Snapshot};
+use crate::state::{Button, Settings, SharedState, Snapshot, StopReason};
 
 const MAX_SLEEP_SLICE: Duration = Duration::from_millis(20);
 const MIN_PERIOD: Duration = Duration::from_millis(1);
@@ -37,6 +37,10 @@ pub fn run(shared: Arc<SharedState>, mut backend: Box<dyn Backend>) {
 }
 
 fn click_series(shared: &SharedState, backend: &mut dyn Backend, initial: Snapshot, rng: &mut Rng) {
+    if !shared.wait_for_start(initial.version) {
+        return;
+    }
+
     let mut deadline = Instant::now();
     let mut held: Option<Button> = None;
 
@@ -69,9 +73,14 @@ fn click_series(shared: &SharedState, backend: &mut dyn Backend, initial: Snapsh
             break;
         }
         held = None;
-        shared.record_click();
+        let limit_reached = shared.record_click();
 
         if !completed {
+            break;
+        }
+
+        if limit_reached {
+            shared.stop(StopReason::Limit);
             break;
         }
 
@@ -216,6 +225,80 @@ mod tests {
         let thread_shared = shared.clone();
         let handle = thread::spawn(move || run(thread_shared, Box::new(backend)));
         (shared, presses, releases, handle)
+    }
+
+    #[test]
+    fn limit_stops_after_exactly_the_requested_number_of_clicks() {
+        let settings = Settings::new(1000.0, Button::Left, 0.2, 0.0)
+            .unwrap()
+            .with_limit(5)
+            .unwrap();
+        let (shared, presses, releases, handle) = spawn_clicker(settings);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while shared.status().enabled && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let status = shared.status();
+        assert!(!status.enabled, "limit should stop the session");
+        assert_eq!(status.stop_reason, Some(StopReason::Limit));
+        assert_eq!(presses.load(Ordering::SeqCst), 5);
+        assert_eq!(
+            presses.load(Ordering::SeqCst),
+            releases.load(Ordering::SeqCst)
+        );
+
+        shared.quit();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn delay_waits_before_the_first_click() {
+        let settings = Settings::new(1000.0, Button::Left, 0.2, 0.0)
+            .unwrap()
+            .with_limit(1)
+            .unwrap()
+            .with_delay_ms(150.0)
+            .unwrap();
+        let (shared, presses, releases, handle) = spawn_clicker(settings);
+        let started = Instant::now();
+
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(presses.load(Ordering::SeqCst), 0);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while presses.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        assert!(started.elapsed() >= Duration::from_millis(130));
+        assert_eq!(presses.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            presses.load(Ordering::SeqCst),
+            releases.load(Ordering::SeqCst)
+        );
+
+        shared.quit();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn stopping_during_the_start_delay_cancels_the_session() {
+        let settings = Settings::default().with_delay_ms(300.0).unwrap();
+        let (shared, presses, releases, handle) = spawn_clicker(settings);
+
+        thread::sleep(Duration::from_millis(50));
+        shared.off();
+        thread::sleep(Duration::from_millis(400));
+
+        assert_eq!(presses.load(Ordering::SeqCst), 0);
+        assert_eq!(releases.load(Ordering::SeqCst), 0);
+        assert!(!shared.status().enabled);
+        assert_eq!(shared.status().stop_reason, Some(StopReason::Manual));
+
+        shared.quit();
+        handle.join().unwrap();
     }
 
     #[test]

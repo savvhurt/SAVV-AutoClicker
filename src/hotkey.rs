@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN,
+    GetAsyncKeyState, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN,
 };
 
 pub(crate) const DEFAULT: &str = "ctrl+alt+c";
@@ -28,8 +28,8 @@ impl Hotkey {
             .filter(|part| !part.is_empty())
             .collect();
 
-        if parts.len() < 2 {
-            bail!("hotkey must contain at least one modifier and one key, e.g. ctrl+alt+c");
+        if parts.is_empty() {
+            bail!("hotkey is empty; use a key such as f8 or ctrl+alt+c");
         }
 
         let (key, modifiers) = parts.split_last().unwrap();
@@ -50,10 +50,6 @@ impl Hotkey {
                 "win" | "super" | "meta" | "cmd" => hotkey.win = true,
                 other => bail!("unknown hotkey modifier `{other}`"),
             }
-        }
-
-        if !(hotkey.ctrl || hotkey.alt || hotkey.shift || hotkey.win) {
-            bail!("hotkey needs at least one modifier (ctrl, alt, shift or win)");
         }
 
         (hotkey.vk, hotkey.key) = parse_key(key)?;
@@ -83,8 +79,33 @@ impl Hotkey {
         modifiers
     }
 
+    /// Whether the key and every modifier are currently held down. Used to
+    /// detect the release of a hold-to-click hotkey, because `RegisterHotKey`
+    /// only reports the initial press.
+    #[cfg(windows)]
+    pub(crate) fn is_down(&self) -> bool {
+        fn down(vk: u32) -> bool {
+            (unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000) != 0
+        }
+
+        let mut keys = vec![self.vk];
+        if self.ctrl {
+            keys.push(0x11);
+        }
+        if self.alt {
+            keys.push(0x12);
+        }
+        if self.shift {
+            keys.push(0x10);
+        }
+        if self.win {
+            keys.push(0x5B);
+        }
+
+        keys.into_iter().all(down)
+    }
+
     /// Human-readable form used by the GUI, e.g. `CTRL + ALT + C`.
-    #[cfg(any(windows, test))]
     pub(crate) fn label(&self) -> String {
         let mut parts = Vec::with_capacity(5);
         if self.ctrl {
@@ -99,7 +120,7 @@ impl Hotkey {
         if self.win {
             parts.push("WIN".to_string());
         }
-        parts.push(self.key.to_ascii_uppercase());
+        parts.push(key_label(&self.key).to_ascii_uppercase());
         parts.join(" + ")
     }
 }
@@ -129,8 +150,31 @@ impl fmt::Display for Hotkey {
     }
 }
 
+fn key_label(key: &str) -> &str {
+    match key {
+        "Space" => "Space",
+        "Escape" => "Esc",
+        "Minus" => "-",
+        "Equals" => "=",
+        "OpenBracket" => "[",
+        "CloseBracket" => "]",
+        "Backslash" => "\\",
+        "Semicolon" => ";",
+        "Quote" => "'",
+        "Comma" => ",",
+        "Period" => ".",
+        "Slash" => "/",
+        "Backtick" => "`",
+        other => other,
+    }
+}
+
 fn parse_key(key: &str) -> Result<(u32, String)> {
-    let upper = key.to_ascii_uppercase();
+    let upper = key.trim().to_ascii_uppercase();
+
+    if upper.is_empty() {
+        bail!("hotkey is empty; use a key such as f8 or ctrl+alt+c");
+    }
 
     if upper.len() == 1 {
         let byte = upper.as_bytes()[0];
@@ -152,7 +196,33 @@ fn parse_key(key: &str) -> Result<(u32, String)> {
         "TAB" => (0x09, "Tab"),
         "ENTER" | "RETURN" => (0x0D, "Enter"),
         "ESC" | "ESCAPE" => (0x1B, "Escape"),
-        "BACKSPACE" => (0x08, "Backspace"),
+        "BACKSPACE" | "BKSP" => (0x08, "Backspace"),
+        "DELETE" | "DEL" => (0x2E, "Delete"),
+        "INSERT" | "INS" => (0x2D, "Insert"),
+        "HOME" => (0x24, "Home"),
+        "END" => (0x23, "End"),
+        "PAGEUP" | "PGUP" | "PRIOR" => (0x21, "PageUp"),
+        "PAGEDOWN" | "PGDN" | "NEXT" => (0x22, "PageDown"),
+        "LEFT" | "ARROWLEFT" => (0x25, "Left"),
+        "UP" | "ARROWUP" => (0x26, "Up"),
+        "RIGHT" | "ARROWRIGHT" => (0x27, "Right"),
+        "DOWN" | "ARROWDOWN" => (0x28, "Down"),
+        "MINUS" | "-" => (0xBD, "Minus"),
+        "EQUALS" | "EQUAL" | "=" | "PLUS" | "+" => (0xBB, "Equals"),
+        "OPENBRACKET" | "LBRACKET" | "LEFTBRACKET" | "OPENCURLYBRACKET" | "[" | "{" => {
+            (0xDB, "OpenBracket")
+        }
+        "CLOSEBRACKET" | "RBRACKET" | "RIGHTBRACKET" | "CLOSECURLYBRACKET" | "]" | "}" => {
+            (0xDD, "CloseBracket")
+        }
+        "BACKSLASH" | "PIPE" | "\\" | "|" => (0xDC, "Backslash"),
+        "SEMICOLON" | "COLON" | ";" | ":" => (0xBA, "Semicolon"),
+        "QUOTE" | "APOSTROPHE" | "'" => (0xDE, "Quote"),
+        "COMMA" | "," => (0xBC, "Comma"),
+        "PERIOD" | "DOT" | "." => (0xBE, "Period"),
+        "SLASH" | "QUESTIONMARK" | "/" | "?" => (0xBF, "Slash"),
+        "BACKTICK" | "BACKQUOTE" | "GRAVE" | "`" => (0xC0, "Backtick"),
+        "EXCLAMATIONMARK" | "!" => (0x31, "1"),
         other => bail!("unsupported hotkey key `{other}`"),
     };
 
@@ -176,6 +246,31 @@ mod tests {
     }
 
     #[test]
+    fn parses_single_keys_without_modifiers() {
+        for (combo, vk) in [
+            ("f8", 0x77),
+            ("F24", 0x87),
+            ("a", 'A' as u32),
+            ("7", '7' as u32),
+            ("space", 0x20),
+            ("esc", 0x1B),
+            ("left", 0x25),
+            ("pagedown", 0x22),
+            ("minus", 0xBD),
+            ("[", 0xDB),
+            ("'", 0xDE),
+            ("`", 0xC0),
+        ] {
+            let hotkey = Hotkey::parse(combo).unwrap();
+            assert_eq!(hotkey.vk, vk, "wrong virtual key for {combo}");
+        }
+
+        assert_eq!(Hotkey::parse("F8").unwrap().to_string(), "f8");
+        assert_eq!(Hotkey::parse("Esc").unwrap().label(), "ESC");
+        assert_eq!(Hotkey::parse("[").unwrap().label(), "[");
+    }
+
+    #[test]
     fn parses_function_keys_and_modifiers() {
         let hotkey = Hotkey::parse("ctrl+shift+f8").unwrap();
         assert!(hotkey.ctrl);
@@ -192,9 +287,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_incomplete_hotkeys() {
-        assert!(Hotkey::parse("c").is_err());
+    fn rejects_empty_and_modifier_only_hotkeys() {
+        assert!(Hotkey::parse("").is_err());
+        assert!(Hotkey::parse("   ").is_err());
         assert!(Hotkey::parse("ctrl").is_err());
+        assert!(Hotkey::parse("ctrl+alt+shift").is_err());
         assert!(Hotkey::parse("ctrl+alt+unknown").is_err());
     }
 }

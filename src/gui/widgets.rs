@@ -6,7 +6,7 @@ use egui::{
 use super::theme;
 
 pub fn status_badge(ui: &mut Ui, text: &str, dot: Color32, pulse: bool) -> Response {
-    let text_color = if pulse { theme::TEXT } else { theme::MUTED };
+    let text_color = if pulse { theme::text() } else { theme::muted() };
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), theme::mono_medium(8.5), text_color);
@@ -51,33 +51,33 @@ pub fn power_button(ui: &mut Ui, active: bool, busy: bool, size: f32) -> Respons
         painter.circle_filled(
             center,
             radius,
-            theme::alpha(theme::TEXT, (5.0 * hover_t) as u8),
+            theme::alpha(theme::text(), (5.0 * hover_t) as u8),
         );
     }
     if active_t > 0.01 {
         painter.circle_filled(
             center,
             radius,
-            theme::alpha(theme::ACCENT, (255.0 * active_t) as u8),
+            theme::alpha(theme::accent(), (255.0 * active_t) as u8),
         );
         painter.circle_stroke(
             center,
             radius + outer,
             Stroke::new(
                 1.0_f32,
-                theme::alpha(theme::ACCENT, (46.0 * active_t) as u8),
+                theme::alpha(theme::accent(), (46.0 * active_t) as u8),
             ),
         );
     }
 
     let ring = theme::mix(
-        theme::TEXT,
-        theme::mix(theme::ACCENT, theme::TEXT, 0.3),
+        theme::text(),
+        theme::mix(theme::accent(), theme::text(), 0.3),
         active_t,
     );
     painter.circle_stroke(center, radius, Stroke::new(1.2 + hover_t * 0.4, ring));
 
-    let glyph = theme::mix(theme::TEXT, theme::BG, active_t);
+    let glyph = theme::mix(theme::text(), theme::bg(), active_t);
     paint_power_glyph(
         painter,
         center,
@@ -93,7 +93,7 @@ pub fn power_button(ui: &mut Ui, active: bool, busy: bool, size: f32) -> Respons
             radius + outer + size * 0.03,
             time * 3.2,
             time * 3.2 + 1.5,
-            Stroke::new(1.5_f32, theme::ACCENT),
+            Stroke::new(1.5_f32, theme::accent()),
         );
     }
 
@@ -158,7 +158,7 @@ pub fn segmented<T: Copy + PartialEq>(
             pos2(rect.left(), rect.bottom() - 0.5),
             pos2(rect.right(), rect.bottom() - 0.5),
         ],
-        Stroke::new(1.0_f32, theme::LINE_SOFT),
+        Stroke::new(1.0_f32, theme::line_soft()),
     );
 
     for (index, (value, label)) in options.iter().enumerate() {
@@ -173,14 +173,14 @@ pub fn segmented<T: Copy + PartialEq>(
             painter.rect_filled(
                 segment.shrink2(vec2(2.0, 3.0)),
                 CornerRadius::same(6),
-                theme::alpha(theme::TEXT, 5),
+                theme::alpha(theme::text(), 5),
             );
         }
 
         let color = if is_selected || is_hovered {
-            theme::TEXT
+            theme::text()
         } else {
-            theme::MUTED
+            theme::muted()
         };
         let galley = painter.layout_no_wrap((*label).to_owned(), theme::mono_medium(8.5), color);
         let text_pos = pos2(
@@ -196,7 +196,7 @@ pub fn segmented<T: Copy + PartialEq>(
                     pos2(segment.center().x - half, rect.bottom() - 1.5),
                     pos2(segment.center().x + half, rect.bottom() - 1.5),
                 ],
-                Stroke::new(1.5_f32, theme::ACCENT),
+                Stroke::new(1.5_f32, theme::accent()),
             );
         }
     }
@@ -247,18 +247,22 @@ pub fn parameter_slider(
 
     let painter = ui.painter();
     let track = Rect::from_min_max(pos2(left, center_y - 1.5), pos2(right, center_y + 1.5));
-    painter.rect_filled(track, CornerRadius::same(2), theme::LINE);
+    painter.rect_filled(track, CornerRadius::same(2), theme::line());
 
     if handle_x > left + 0.5 {
         let fill = Rect::from_min_max(pos2(left, center_y - 1.5), pos2(handle_x, center_y + 1.5));
-        painter.rect_filled(fill, CornerRadius::same(2), theme::ACCENT);
+        painter.rect_filled(fill, CornerRadius::same(2), theme::accent());
     }
 
     let hot = response.hovered() || response.dragged();
     let handle = pos2(handle_x, center_y);
     let radius = if hot { 5.0 } else { 4.0 };
-    painter.circle_filled(handle, radius, if hot { theme::ACCENT } else { theme::BG });
-    painter.circle_stroke(handle, radius, Stroke::new(1.5_f32, theme::ACCENT));
+    painter.circle_filled(
+        handle,
+        radius,
+        if hot { theme::accent() } else { theme::bg() },
+    );
+    painter.circle_stroke(handle, radius, Stroke::new(1.5_f32, theme::accent()));
 
     response
 }
@@ -275,7 +279,7 @@ pub fn numeric_field(
     ui.label(
         RichText::new(suffix)
             .font(theme::mono_medium(8.0))
-            .color(theme::DIM),
+            .color(theme::dim()),
     );
 
     let (rect, _) = ui.allocate_exact_size(Vec2::new(54.0, 18.0), Sense::hover());
@@ -289,12 +293,12 @@ pub fn numeric_field(
     child.style_mut().override_text_style = Some(TextStyle::Monospace);
     child.style_mut().override_font_id = Some(theme::mono_medium(12.0));
     child.spacing_mut().interact_size = Vec2::new(46.0, 18.0);
-    child.visuals_mut().extreme_bg_color = theme::PANEL;
+    child.visuals_mut().extreme_bg_color = theme::panel();
     child.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     child.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
     child.visuals_mut().widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
     child.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
-    child.visuals_mut().widgets.active.weak_bg_fill = theme::alpha(theme::ACCENT, 14);
+    child.visuals_mut().widgets.active.weak_bg_fill = theme::alpha(theme::accent(), 14);
     child.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
 
     let changed = child
@@ -312,35 +316,109 @@ pub fn numeric_field(
             pos2(rect.left() + 2.0, rect.bottom() - 0.5),
             pos2(rect.right() - 2.0, rect.bottom() - 0.5),
         ],
-        Stroke::new(1.0_f32, if hovered { theme::MUTED } else { theme::LINE }),
+        Stroke::new(
+            1.0_f32,
+            if hovered {
+                theme::muted()
+            } else {
+                theme::line()
+            },
+        ),
     );
 
     changed
 }
 
-pub fn banner(ui: &mut Ui, tone: Color32, title: &str, text: &str) {
+pub fn integer_field(
+    ui: &mut Ui,
+    value: &mut u64,
+    range: std::ops::RangeInclusive<u64>,
+    speed: f64,
+    suffix: &str,
+) -> bool {
+    ui.spacing_mut().item_spacing.x = 5.0;
+    ui.label(
+        RichText::new(suffix)
+            .font(theme::mono_medium(8.0))
+            .color(theme::dim()),
+    );
+
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(54.0, 18.0), Sense::hover());
+    let hovered = ui.rect_contains_pointer(rect);
+
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    child.style_mut().override_text_style = Some(TextStyle::Monospace);
+    child.style_mut().override_font_id = Some(theme::mono_medium(12.0));
+    child.spacing_mut().interact_size = Vec2::new(46.0, 18.0);
+    child.visuals_mut().extreme_bg_color = theme::panel();
+    child.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    child.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
+    child.visuals_mut().widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
+    child.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
+    child.visuals_mut().widgets.active.weak_bg_fill = theme::alpha(theme::accent(), 14);
+    child.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
+
+    let changed = child
+        .add_sized(
+            Vec2::new(46.0, 18.0),
+            egui::DragValue::new(value)
+                .range(range)
+                .speed(speed)
+                .max_decimals(0),
+        )
+        .changed();
+
+    ui.painter().line_segment(
+        [
+            pos2(rect.left() + 2.0, rect.bottom() - 0.5),
+            pos2(rect.right() - 2.0, rect.bottom() - 0.5),
+        ],
+        Stroke::new(
+            1.0_f32,
+            if hovered {
+                theme::muted()
+            } else {
+                theme::line()
+            },
+        ),
+    );
+
+    changed
+}
+
+pub fn notice_line(ui: &mut Ui, tone: Color32, title: &str, text: &str) -> Response {
+    let full = format!("{title}: {text}");
     ui.horizontal(|ui| {
         let (dot, _) = ui.allocate_exact_size(Vec2::splat(6.0), Sense::hover());
         ui.painter().circle_filled(dot.center(), 3.0, tone);
         ui.label(
             RichText::new(title)
-                .font(theme::mono_medium(8.5))
+                .font(theme::mono_medium(8.0))
                 .color(tone),
         );
-        ui.add(
+
+        let width = ui.available_width().max(40.0);
+        let response = ui.add_sized(
+            Vec2::new(width, 18.0),
             egui::Label::new(
                 RichText::new(text)
-                    .font(theme::sans(11.0))
-                    .color(theme::TEXT),
+                    .font(theme::sans(10.5))
+                    .color(theme::text()),
             )
-            .wrap(),
+            .truncate(),
         );
-    });
+        response.on_hover_text(full)
+    })
+    .inner
 }
 
 pub fn text_button(ui: &mut Ui, label: &str, idle: Color32, hover: Color32) -> Response {
     let enabled = ui.is_enabled();
-    let idle = if enabled { idle } else { theme::DIM };
+    let idle = if enabled { idle } else { theme::dim() };
     let prepared = ui
         .painter()
         .layout_no_wrap(label.to_owned(), theme::sans_medium(10.5), idle);
