@@ -559,8 +559,12 @@ impl SharedState {
     pub fn hold_press(&self) -> bool {
         let started = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.quit || inner.enabled {
-                inner.hold_active = false;
+            if inner.quit {
+                false
+            } else if inner.enabled {
+                // A repeated key-down (or a hotkey repeat) must not detach the
+                // running hold session, otherwise the following key-up would
+                // no longer stop the clicks.
                 false
             } else {
                 Self::begin_session_locked(&mut inner);
@@ -943,6 +947,20 @@ mod tests {
 
         shared.hold_release();
         assert!(shared.status().enabled);
+    }
+
+    #[test]
+    fn repeated_hold_press_still_stops_on_release() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert!(shared.hold_press());
+        assert!(!shared.hold_press());
+        assert!(shared.status().hold_active);
+        assert!(shared.status().enabled);
+
+        shared.hold_release();
+        assert!(!shared.status().enabled);
+        assert_eq!(shared.status().stop_reason, Some(StopReason::Hold));
     }
 
     #[test]

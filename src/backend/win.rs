@@ -251,7 +251,10 @@ fn start_hold(
 fn handle_hotkey_press(shared: &SharedState, registry: &Registry, id: i32) {
     if registry.toggle.as_ref().is_some_and(|item| item.id == id) {
         shared.toggle();
-    } else if registry.hold.as_ref().is_some_and(|item| item.id == id) && shared.hold_press() {
+    } else if registry.hold.as_ref().is_some_and(|item| item.id == id)
+        && (shared.hold_press() || shared.status().hold_active)
+    {
+        // Re-arm the release poll even if the key-down event was repeated.
         start_hold_timer();
     }
 }

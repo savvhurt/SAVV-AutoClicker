@@ -267,6 +267,26 @@ pub fn parameter_slider(
     response
 }
 
+fn paint_field_background(ui: &Ui, rect: Rect, hovered: bool) {
+    let radius = CornerRadius::same(6);
+    let fill = if hovered {
+        theme::mix(theme::input(), theme::accent(), 0.10)
+    } else {
+        theme::input()
+    };
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, fill);
+    if hovered {
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(1.0_f32, theme::alpha(theme::accent(), 96)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 pub fn numeric_field(
     ui: &mut Ui,
     value: &mut f64,
@@ -284,6 +304,7 @@ pub fn numeric_field(
 
     let (rect, _) = ui.allocate_exact_size(Vec2::new(54.0, 18.0), Sense::hover());
     let hovered = ui.rect_contains_pointer(rect);
+    paint_field_background(ui, rect, hovered);
 
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -301,7 +322,7 @@ pub fn numeric_field(
     child.visuals_mut().widgets.active.weak_bg_fill = theme::alpha(theme::accent(), 14);
     child.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
 
-    let changed = child
+    child
         .add_sized(
             Vec2::new(46.0, 18.0),
             egui::DragValue::new(value)
@@ -309,24 +330,7 @@ pub fn numeric_field(
                 .speed(speed)
                 .max_decimals(decimals),
         )
-        .changed();
-
-    ui.painter().line_segment(
-        [
-            pos2(rect.left() + 2.0, rect.bottom() - 0.5),
-            pos2(rect.right() - 2.0, rect.bottom() - 0.5),
-        ],
-        Stroke::new(
-            1.0_f32,
-            if hovered {
-                theme::muted()
-            } else {
-                theme::line()
-            },
-        ),
-    );
-
-    changed
+        .changed()
 }
 
 pub fn integer_field(
@@ -345,6 +349,7 @@ pub fn integer_field(
 
     let (rect, _) = ui.allocate_exact_size(Vec2::new(54.0, 18.0), Sense::hover());
     let hovered = ui.rect_contains_pointer(rect);
+    paint_field_background(ui, rect, hovered);
 
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -362,7 +367,7 @@ pub fn integer_field(
     child.visuals_mut().widgets.active.weak_bg_fill = theme::alpha(theme::accent(), 14);
     child.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
 
-    let changed = child
+    child
         .add_sized(
             Vec2::new(46.0, 18.0),
             egui::DragValue::new(value)
@@ -370,24 +375,62 @@ pub fn integer_field(
                 .speed(speed)
                 .max_decimals(0),
         )
-        .changed();
+        .changed()
+}
 
-    ui.painter().line_segment(
-        [
-            pos2(rect.left() + 2.0, rect.bottom() - 0.5),
-            pos2(rect.right() - 2.0, rect.bottom() - 0.5),
-        ],
+pub fn theme_toggle(ui: &mut Ui, dark: bool) -> Response {
+    let label = if dark {
+        "СВЕТЛАЯ"
+    } else {
+        "ТЁМНАЯ"
+    };
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.to_owned(), theme::mono_medium(8.5), theme::text());
+    let size = Vec2::new(galley.size().x + 34.0, 24.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    let hovered = response.hovered();
+
+    let radius = CornerRadius::same(7);
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        radius,
+        if hovered {
+            theme::alpha(theme::accent(), 16)
+        } else {
+            theme::panel()
+        },
+    );
+    painter.rect_stroke(
+        rect,
+        radius,
         Stroke::new(
             1.0_f32,
             if hovered {
-                theme::muted()
+                theme::accent()
             } else {
                 theme::line()
             },
         ),
+        egui::StrokeKind::Inside,
     );
 
-    changed
+    let icon = pos2(rect.left() + 13.0, rect.center().y);
+    painter.circle_stroke(icon, 4.5, Stroke::new(1.2_f32, theme::accent()));
+    painter.circle_filled(icon, 2.0, theme::accent());
+    if dark {
+        painter.circle_filled(pos2(icon.x + 2.0, icon.y - 2.0), 4.0, theme::panel());
+    }
+
+    painter.galley(
+        pos2(rect.left() + 22.0, rect.center().y - galley.size().y * 0.5),
+        galley,
+        theme::text(),
+    );
+
+    response
 }
 
 pub fn notice_line(ui: &mut Ui, tone: Color32, title: &str, text: &str) -> Response {
@@ -459,6 +502,7 @@ pub fn text_button(ui: &mut Ui, label: &str, idle: Color32, hover: Color32) -> R
     response
 }
 
+#[cfg(not(windows))]
 pub fn solid_button(ui: &mut Ui, label: &str, fill: Color32, text: Color32) -> Response {
     let button = egui::Button::new(
         RichText::new(label)

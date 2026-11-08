@@ -2,12 +2,11 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use egui::{
-    self, Align, Color32, CornerRadius, Frame, Id, Key, Layout, Margin, RichText, Sense, Stroke,
-    Ui, Vec2,
+    self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, Vec2,
 };
 use egui_software_backend::{SoftwareBackend, SoftwareBackendAppConfiguration};
 
-use super::config::{self, Profile, ThemeMode};
+use super::config::{self, ThemeMode};
 use super::worker::{Command, Event, Worker};
 use super::{theme, widgets};
 
@@ -26,7 +25,6 @@ const LABEL_WIDTH: f32 = 90.0;
 enum Tab {
     Clicks,
     Hotkeys,
-    Profiles,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,10 +81,6 @@ pub struct GuiApp {
     hold_hotkey: String,
     recording: Option<RecordTarget>,
     theme_mode: ThemeMode,
-    profiles: Vec<Profile>,
-    active_profile: String,
-    save_as_open: bool,
-    save_as_name: String,
     online: bool,
     enabled: bool,
     actual_cps: f64,
@@ -116,6 +110,7 @@ pub struct GuiApp {
     draft_changed_at: Option<Instant>,
     last_apply_sent: Option<Instant>,
     pending_toggle: Option<(bool, Instant)>,
+    #[cfg(not(windows))]
     confirm_quit: bool,
     commands: Sender<Command>,
     events: Receiver<Event>,
@@ -136,10 +131,6 @@ impl GuiApp {
             hold_hotkey: config.hold_hotkey,
             recording: None,
             theme_mode: config.theme,
-            profiles: config.profiles,
-            active_profile: config.active_profile,
-            save_as_open: false,
-            save_as_name: String::new(),
             online: false,
             enabled: false,
             actual_cps: 0.0,
@@ -166,6 +157,7 @@ impl GuiApp {
             draft_changed_at: None,
             last_apply_sent: None,
             pending_toggle: None,
+            #[cfg(not(windows))]
             confirm_quit: false,
             commands: worker.commands,
             events: worker.events,
@@ -204,6 +196,7 @@ impl GuiApp {
                     self.notice = Some(error);
                     self.pending_toggle = None;
                 }
+                #[cfg(not(windows))]
                 Event::Stopped => {
                     self.clear_daemon_state();
                     self.offline_reason = None;
@@ -380,8 +373,6 @@ impl GuiApp {
                 hotkey: self.hotkey.clone(),
                 hold_hotkey: self.hold_hotkey.clone(),
                 theme: self.theme_mode,
-                profiles: self.profiles.clone(),
-                active_profile: self.active_profile.clone(),
             })
     }
 
@@ -571,78 +562,11 @@ impl GuiApp {
         }
     }
 
+    #[cfg(not(windows))]
     fn request_quit(&mut self) {
         self.pending_toggle = None;
         self.notice = Some("Завершаю демон…".to_string());
         let _ = self.commands.send(Command::QuitDaemon);
-    }
-
-    fn apply_profile(&mut self, name: &str) {
-        let Some(profile) = self
-            .profiles
-            .iter()
-            .find(|profile| profile.name == name)
-            .cloned()
-        else {
-            return;
-        };
-        self.settings = profile.settings.into();
-        self.active_profile = profile.name.clone();
-        self.save_as_open = false;
-        self.notice = Some(format!("Профиль «{}» применён.", profile.name));
-        self.flush_settings();
-    }
-
-    fn save_profile(&mut self) {
-        let Ok(settings) = self.settings.to_settings() else {
-            self.notice = Some("Проверьте параметры перед сохранением профиля.".to_string());
-            return;
-        };
-        let Some(profile) = self
-            .profiles
-            .iter_mut()
-            .find(|profile| profile.name == self.active_profile)
-        else {
-            return;
-        };
-        profile.settings = settings;
-        self.notice = Some(format!("Профиль «{}» сохранён.", self.active_profile));
-        self.save_config();
-    }
-
-    fn create_profile(&mut self) {
-        let name = self.save_as_name.trim().to_string();
-        if name.is_empty() {
-            self.notice = Some("Введите имя профиля.".to_string());
-            return;
-        }
-        if self.profiles.iter().any(|profile| profile.name == name) {
-            self.notice = Some("Профиль с таким именем уже существует.".to_string());
-            return;
-        }
-        let Ok(settings) = self.settings.to_settings() else {
-            self.notice = Some("Проверьте параметры перед сохранением профиля.".to_string());
-            return;
-        };
-
-        self.profiles.push(Profile::new(name.clone(), settings));
-        self.active_profile = name.clone();
-        self.save_as_open = false;
-        self.save_as_name.clear();
-        self.notice = Some(format!("Профиль «{name}» создан."));
-        self.save_config();
-    }
-
-    fn delete_profile(&mut self) {
-        if self.profiles.len() <= 1 {
-            self.notice = Some("Нельзя удалить последний профиль.".to_string());
-            return;
-        }
-        self.profiles
-            .retain(|profile| profile.name != self.active_profile);
-        let next = self.profiles[0].name.clone();
-        self.notice = Some(format!("Профиль «{}» удалён.", self.active_profile));
-        self.apply_profile(&next);
     }
 
     fn status_palette(&self) -> (&'static str, Color32, bool) {
@@ -689,11 +613,7 @@ impl GuiApp {
                     let _ = response.on_hover_text(reason);
                 }
 
-                let theme_label = match self.theme_mode {
-                    ThemeMode::Light => "ТЁМНАЯ",
-                    ThemeMode::Dark => "СВЕТЛАЯ",
-                };
-                if widgets::text_button(ui, theme_label, theme::muted(), theme::text())
+                if widgets::theme_toggle(ui, self.theme_mode == ThemeMode::Dark)
                     .on_hover_text("Переключить светлую и тёмную тему")
                     .clicked()
                 {
@@ -877,11 +797,7 @@ impl GuiApp {
             ui,
             "main_tabs",
             &mut tab,
-            &[
-                (Tab::Clicks, "КЛИКИ"),
-                (Tab::Hotkeys, "ХОТКЕИ"),
-                (Tab::Profiles, "ПРОФИЛИ"),
-            ],
+            &[(Tab::Clicks, "КЛИКИ"), (Tab::Hotkeys, "ГОРЯЧИЕ КЛАВИШИ")],
         );
         if changed {
             self.tab = tab;
@@ -1182,121 +1098,7 @@ impl GuiApp {
         format!("Mod+Alt+C {{ spawn \"{executable}\" \"toggle\"; }}")
     }
 
-    fn draw_profiles_tab(&mut self, ui: &mut Ui) {
-        let mut selected = self.active_profile.clone();
-
-        ui.horizontal(|ui| {
-            let _ = row_label(ui, "Профиль", "Набор параметров кликов", 22.0);
-
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                let width = ui.available_width().max(120.0);
-                ui.allocate_ui_with_layout(
-                    Vec2::new(width, 24.0),
-                    Layout::left_to_right(Align::Center),
-                    |ui| {
-                        egui::ComboBox::from_id_salt("profile_choice")
-                            .selected_text(
-                                RichText::new(&self.active_profile)
-                                    .font(theme::sans_medium(11.5))
-                                    .color(theme::text()),
-                            )
-                            .width(ui.available_width())
-                            .show_ui(ui, |ui| {
-                                for profile in &self.profiles {
-                                    ui.selectable_value(
-                                        &mut selected,
-                                        profile.name.clone(),
-                                        RichText::new(&profile.name).font(theme::sans(11.5)),
-                                    );
-                                }
-                            });
-                    },
-                );
-            });
-        });
-
-        if selected != self.active_profile {
-            self.apply_profile(&selected);
-        }
-
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let delete = widgets::text_button(ui, "УДАЛИТЬ", theme::muted(), theme::danger());
-                if delete.clicked() && self.profiles.len() > 1 {
-                    self.delete_profile();
-                }
-
-                if widgets::text_button(ui, "СОХРАНИТЬ КАК…", theme::muted(), theme::text())
-                    .clicked()
-                {
-                    self.save_as_open = !self.save_as_open;
-                    self.save_as_name.clear();
-                }
-
-                if widgets::text_button(ui, "СОХРАНИТЬ", theme::muted(), theme::accent()).clicked()
-                {
-                    self.save_profile();
-                }
-            });
-        });
-
-        let modified = self
-            .settings
-            .to_settings()
-            .ok()
-            .zip(
-                self.profiles
-                    .iter()
-                    .find(|profile| profile.name == self.active_profile),
-            )
-            .map(|(settings, profile)| !settings_equivalent(&settings, &profile.settings))
-            .unwrap_or(true);
-        ui.add_space(2.0);
-        ui.add(
-            egui::Label::new(
-                RichText::new(if modified {
-                    "Текущие параметры отличаются от профиля — сохраните или создайте новый."
-                } else {
-                    "Текущие параметры совпадают с профилем."
-                })
-                .font(theme::sans(9.5))
-                .color(if modified {
-                    theme::warning()
-                } else {
-                    theme::dim()
-                }),
-            )
-            .truncate(),
-        );
-
-        if self.save_as_open {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let width = (ui.available_width() - 160.0).max(100.0);
-                let response = ui.add_sized(
-                    [width, 24.0],
-                    egui::TextEdit::singleline(&mut self.save_as_name)
-                        .hint_text("Имя нового профиля")
-                        .char_limit(40),
-                );
-                let submitted =
-                    response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-
-                if widgets::text_button(ui, "СОЗДАТЬ", theme::muted(), theme::accent()).clicked()
-                    || submitted
-                {
-                    self.create_profile();
-                }
-                if widgets::text_button(ui, "ОТМЕНА", theme::muted(), theme::text()).clicked()
-                {
-                    self.save_as_open = false;
-                    self.save_as_name.clear();
-                }
-            });
-        }
-    }
-
+    #[cfg(not(windows))]
     fn draw_footer(&mut self, ui: &mut Ui) {
         let mut quit_clicked = false;
 
@@ -1348,6 +1150,7 @@ impl GuiApp {
         }
     }
 
+    #[cfg(not(windows))]
     fn draw_quit_confirmation(&mut self, ctx: &egui::Context) {
         if !self.confirm_quit {
             return;
@@ -1356,7 +1159,7 @@ impl GuiApp {
         let mut close = false;
         let mut quit = false;
 
-        let modal = egui::Modal::new(Id::new("quit_daemon"))
+        let modal = egui::Modal::new(egui::Id::new("quit_daemon"))
             .backdrop_color(Color32::from_black_alpha(120))
             .frame(
                 Frame::new()
@@ -1431,6 +1234,7 @@ impl egui_software_backend::App for GuiApp {
                     .inner_margin(Margin::symmetric(16, 10)),
             )
             .show_inside(ui, |ui| {
+                #[cfg(not(windows))]
                 egui::Panel::bottom("daemon_footer")
                     .frame(
                         Frame::new()
@@ -1466,12 +1270,12 @@ impl egui_software_backend::App for GuiApp {
                         |ui| match self.tab {
                             Tab::Clicks => self.draw_clicks_tab(ui),
                             Tab::Hotkeys => self.draw_hotkeys_tab(ui),
-                            Tab::Profiles => self.draw_profiles_tab(ui),
                         },
                     );
                 });
             });
 
+        #[cfg(not(windows))]
         self.draw_quit_confirmation(ui.ctx());
     }
 }
@@ -1479,8 +1283,10 @@ impl egui_software_backend::App for GuiApp {
 impl Drop for GuiApp {
     fn drop(&mut self) {
         let _ = ipc::send("HOTKEY_RESUME");
-        let _ = self.commands.send(Command::Shutdown);
         let _ = ipc::send("OFF");
+        #[cfg(windows)]
+        let _ = ipc::send("QUIT");
+        let _ = self.commands.send(Command::Shutdown);
         self.save_config();
     }
 }

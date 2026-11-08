@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::hotkey::{DEFAULT as DEFAULT_HOTKEY, Hotkey};
 use crate::state::{Button, Settings};
 
-pub const DEFAULT_PROFILE: &str = "По умолчанию";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeMode {
     Light,
@@ -40,29 +38,12 @@ impl ThemeMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Profile {
-    pub name: String,
-    pub settings: Settings,
-}
-
-impl Profile {
-    pub fn new(name: impl Into<String>, settings: Settings) -> Self {
-        Self {
-            name: name.into(),
-            settings,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Config {
     pub settings: Settings,
     pub hotkey: String,
     pub hold_hotkey: String,
     pub theme: ThemeMode,
-    pub profiles: Vec<Profile>,
-    pub active_profile: String,
 }
 
 #[derive(Clone, Debug)]
@@ -87,23 +68,6 @@ struct PersistedSettings {
     hold_hotkey: String,
     #[serde(default = "default_theme")]
     theme: String,
-    #[serde(default)]
-    active_profile: String,
-    #[serde(default)]
-    profiles: Vec<PersistedProfile>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedProfile {
-    name: String,
-    cps: f64,
-    button: String,
-    hold_ms: f64,
-    jitter_pct: f64,
-    #[serde(default)]
-    limit: u64,
-    #[serde(default)]
-    delay_ms: f64,
 }
 
 impl PersistedSettings {
@@ -118,43 +82,7 @@ impl PersistedSettings {
             hotkey: config.hotkey.clone(),
             hold_hotkey: config.hold_hotkey.clone(),
             theme: config.theme.as_str().to_string(),
-            active_profile: config.active_profile.clone(),
-            profiles: config
-                .profiles
-                .iter()
-                .map(PersistedProfile::from_profile)
-                .collect(),
         }
-    }
-}
-
-impl PersistedProfile {
-    fn from_profile(profile: &Profile) -> Self {
-        Self {
-            name: profile.name.clone(),
-            cps: profile.settings.cps,
-            button: profile.settings.button.to_string(),
-            hold_ms: profile.settings.hold_ms(),
-            jitter_pct: profile.settings.jitter_pct,
-            limit: profile.settings.limit,
-            delay_ms: profile.settings.delay_ms(),
-        }
-    }
-
-    fn to_profile(&self) -> Result<Profile> {
-        let name = self.name.trim();
-        if name.is_empty() {
-            anyhow::bail!("profile name cannot be empty");
-        }
-        let settings = Settings::new(
-            self.cps,
-            self.button.parse::<Button>()?,
-            self.hold_ms,
-            self.jitter_pct,
-        )?
-        .with_limit(self.limit)?
-        .with_delay_ms(self.delay_ms)?;
-        Ok(Profile::new(name, settings))
     }
 }
 
@@ -172,8 +100,6 @@ pub fn load() -> Loaded {
         hotkey: default_hotkey(),
         hold_hotkey: String::new(),
         theme: ThemeMode::Light,
-        profiles: vec![Profile::new(DEFAULT_PROFILE, Settings::default())],
-        active_profile: DEFAULT_PROFILE.to_string(),
     };
 
     let path = match config_path() {
@@ -269,47 +195,12 @@ pub fn load() -> Loaded {
         }
     };
 
-    let mut profiles = Vec::new();
-    for profile in &persisted.profiles {
-        match profile.to_profile() {
-            Ok(profile) => {
-                if profiles
-                    .iter()
-                    .any(|existing: &Profile| existing.name == profile.name)
-                {
-                    warnings.push(format!(
-                        "Профиль `{}` пропущен: имя повторяется.",
-                        profile.name
-                    ));
-                } else {
-                    profiles.push(profile);
-                }
-            }
-            Err(error) => warnings.push(format!("Профиль `{}` пропущен: {error:#}.", profile.name)),
-        }
-    }
-
-    if profiles.is_empty() {
-        profiles.push(Profile::new(DEFAULT_PROFILE, settings));
-    }
-
-    let active_profile = if profiles
-        .iter()
-        .any(|profile| profile.name == persisted.active_profile)
-    {
-        persisted.active_profile
-    } else {
-        profiles[0].name.clone()
-    };
-
     Loaded {
         config: Config {
             settings,
             hotkey,
             hold_hotkey,
             theme,
-            profiles,
-            active_profile,
         },
         warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
     }
@@ -398,17 +289,6 @@ mod tests {
             hotkey: "f8".to_string(),
             hold_hotkey: "alt+space".to_string(),
             theme: ThemeMode::Dark,
-            profiles: vec![
-                Profile::new(
-                    "Точный",
-                    Settings::new(10.0, Button::Left, 40.0, 0.0)
-                        .unwrap()
-                        .with_limit(20)
-                        .unwrap(),
-                ),
-                Profile::new("По умолчанию", Settings::default()),
-            ],
-            active_profile: "Точный".to_string(),
         }
     }
 
@@ -421,9 +301,8 @@ mod tests {
         assert_eq!(parsed.hotkey, "f8");
         assert_eq!(parsed.hold_hotkey, "alt+space");
         assert_eq!(parsed.theme, "dark");
-        assert_eq!(parsed.active_profile, "Точный");
-        assert_eq!(parsed.profiles.len(), 2);
-        assert_eq!(parsed.profiles[0].limit, 20);
+        assert!(!text.contains("profiles"));
+        assert!(!text.contains("active_profile"));
 
         let settings = parse(&text).unwrap();
         assert_eq!(settings.limit, 500);
@@ -447,12 +326,15 @@ mod tests {
     }
 
     #[test]
-    fn old_config_gets_a_default_profile() {
-        let text = "cps = 100\nbutton = \"right\"\nhold_ms = 8\njitter_pct = 0\nhotkey = \"f8\"\n";
+    fn legacy_profile_fields_are_ignored() {
+        let text = "cps = 100\nbutton = \"right\"\nhold_ms = 8\njitter_pct = 0\nhotkey = \"f8\"\nactive_profile = \"Точный\"\n[[profiles]]\nname = \"Точный\"\ncps = 10.0\nbutton = \"left\"\nhold_ms = 40.0\njitter_pct = 0.0\n";
         let persisted: PersistedSettings = toml::from_str(text).unwrap();
-        assert!(persisted.profiles.is_empty());
         assert_eq!(persisted.theme, "light");
         assert_eq!(persisted.hold_hotkey, "");
+
+        let settings = parse(text).unwrap();
+        assert_eq!(settings.cps, 100.0);
+        assert_eq!(settings.button, Button::Right);
     }
 
     #[test]

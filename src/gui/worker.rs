@@ -25,6 +25,7 @@ pub enum Command {
         hold_hotkey: String,
         resume: Option<Settings>,
     },
+    #[cfg(not(windows))]
     QuitDaemon,
     Shutdown,
 }
@@ -34,6 +35,7 @@ pub enum Event {
     Status(Box<Status>),
     Offline(String),
     Error(String),
+    #[cfg(not(windows))]
     Stopped,
 }
 
@@ -82,12 +84,19 @@ fn run(
     };
     let mut next_poll = Instant::now();
 
+    // On Windows the GUI owns the daemon: bring it up as soon as the window
+    // opens so the global hotkey is usable without pressing any button.
+    #[cfg(windows)]
+    ensure_daemon(&events, &ctx, &mut session);
+
     loop {
         let timeout = next_poll.saturating_duration_since(Instant::now());
         match commands.recv_timeout(timeout) {
             Ok(Command::Shutdown) => {
                 let _ = ipc::send("HOTKEY_RESUME");
                 let _ = ipc::send("OFF");
+                #[cfg(windows)]
+                let _ = ipc::send("QUIT");
                 break;
             }
             Ok(command) => {
@@ -111,7 +120,10 @@ fn handle_command(
     ctx: &egui::Context,
     session: &mut Session,
 ) {
+    #[cfg(not(windows))]
     let quit_daemon = matches!(command, Command::QuitDaemon);
+    #[cfg(windows)]
+    let quit_daemon = false;
 
     match command {
         Command::Start(settings) => {
@@ -323,6 +335,7 @@ fn handle_command(
                 ),
             }
         }
+        #[cfg(not(windows))]
         Command::QuitDaemon => {
             let _ = ipc::send("OFF");
             match ipc::send("QUIT").and_then(|response| {
@@ -384,4 +397,30 @@ fn poll(events: &Sender<Event>, ctx: &egui::Context, session: &mut Session) {
 fn send_error(events: &Sender<Event>, ctx: &egui::Context, message: String) {
     let _ = events.send(Event::Error(message));
     ctx.request_repaint();
+}
+
+#[cfg(windows)]
+fn ensure_daemon(events: &Sender<Event>, ctx: &egui::Context, session: &mut Session) {
+    match ipc::send_or_spawn_with_hotkeys(
+        "STATUS",
+        &session.hotkey,
+        Some(session.hold_hotkey.as_str()),
+    ) {
+        Ok(response) => match ipc::ensure_ok(&response) {
+            Ok(()) => {
+                session.online = true;
+                session.last_offline = None;
+            }
+            Err(error) => send_error(
+                events,
+                ctx,
+                format!("Не удалось запустить демон: {error:#}"),
+            ),
+        },
+        Err(error) => send_error(
+            events,
+            ctx,
+            format!("Не удалось запустить демон: {error:#}"),
+        ),
+    }
 }
