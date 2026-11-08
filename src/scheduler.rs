@@ -272,6 +272,13 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
 
+        // The release happens after the configured hold, so wait for the
+        // worker to finish the click instead of racing it on a loaded runner.
+        let release_deadline = Instant::now() + Duration::from_secs(2);
+        while releases.load(Ordering::SeqCst) == 0 && Instant::now() < release_deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+
         assert!(started.elapsed() >= Duration::from_millis(130));
         assert_eq!(presses.load(Ordering::SeqCst), 1);
         assert_eq!(
