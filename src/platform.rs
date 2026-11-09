@@ -126,7 +126,10 @@ impl InstanceLock {
 
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Some(Self { _file: file })),
-            Err(_) => Ok(None),
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
+                Ok(None)
+            }
+            Err(error) => Err(error).with_context(|| format!("failed to lock {}", path.display())),
         }
     }
 }

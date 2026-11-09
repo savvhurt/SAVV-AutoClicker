@@ -17,6 +17,9 @@ pub fn run_foreground(args: RunArgs) -> Result<()> {
         if !seconds.is_finite() || seconds <= 0.0 {
             bail!("--duration-secs must be a positive number");
         }
+        if Duration::try_from_secs_f64(seconds).is_err() {
+            bail!("--duration-secs is too large");
+        }
     }
 
     let _timer = platform::timer_resolution();

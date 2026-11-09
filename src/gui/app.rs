@@ -171,6 +171,8 @@ impl GuiApp {
         self.starting = false;
         self.delay_left_ms = 0;
         self.hold_active = false;
+        self.stop_reason = None;
+        self.daemon_error = None;
         self.daemon_settings = None;
         self.daemon_protocol = 0;
         self.daemon_hotkey_active.clear();
@@ -221,6 +223,7 @@ impl GuiApp {
 
     fn apply_status(&mut self, status: Status) {
         let first_status = !self.initialized;
+        let draft_was_dirty = self.draft_changed_at.is_some();
 
         self.online = true;
         self.initialized = true;
@@ -298,8 +301,9 @@ impl GuiApp {
 
         if first_status {
             if status.enabled {
-                self.settings = status.settings.into();
-                self.draft_changed_at = None;
+                if !draft_was_dirty {
+                    self.settings = status.settings.into();
+                }
             } else if let Ok(current) = self.settings.to_settings() {
                 if !settings_equivalent(&current, &status.settings) {
                     let _ = self.commands.send(Command::Apply(current));
@@ -317,7 +321,9 @@ impl GuiApp {
         if let Ok(current) = self.settings.to_settings() {
             if settings_equivalent(&current, &status.settings) {
                 self.last_apply_sent = None;
-                self.draft_changed_at = None;
+                if self.draft_changed_at.take().is_some() {
+                    self.save_config();
+                }
             }
         }
 
@@ -522,15 +528,20 @@ impl GuiApp {
             }
         }
 
+        let bound = match target {
+            RecordTarget::Toggle => self.hotkey.as_str(),
+            RecordTarget::Hold => self.hold_hotkey.as_str(),
+        };
+        let label = crate::hotkey::Hotkey::parse(bound)
+            .map(|hotkey| hotkey.label())
+            .unwrap_or_else(|_| bound.to_ascii_uppercase());
         self.notice = Some(format!(
             "{}: {}.",
             match target {
                 RecordTarget::Toggle => "Переключение",
                 RecordTarget::Hold => "Удержание",
             },
-            crate::hotkey::Hotkey::parse(&self.hotkey)
-                .map(|hotkey| hotkey.label())
-                .unwrap_or_else(|_| self.hotkey.to_ascii_uppercase())
+            label
         ));
         self.save_config();
     }
@@ -1277,6 +1288,14 @@ impl egui_software_backend::App for GuiApp {
 
         #[cfg(not(windows))]
         self.draw_quit_confirmation(ui.ctx());
+
+        // The debounce needs its own wake-up: the software backend waits for
+        // events, so an idle window would otherwise not apply or save the
+        // pending draft until the user interacts again.
+        if let Some(changed_at) = self.draft_changed_at {
+            ui.ctx()
+                .request_repaint_after(APPLY_DEBOUNCE.saturating_sub(changed_at.elapsed()));
+        }
     }
 }
 
