@@ -3,13 +3,14 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::backend::Backend;
-use crate::state::{Button, Settings, SharedState, Snapshot, StopReason};
+use crate::state::{Settings, SharedState, Snapshot, StopReason};
 
 const MAX_SLEEP_SLICE: Duration = Duration::from_millis(20);
 const MIN_PERIOD: Duration = Duration::from_millis(1);
 const MAX_PERIOD: Duration = Duration::from_secs(3600);
 const MIN_HOLD: Duration = Duration::from_micros(100);
 const RELEASE_GAP: Duration = Duration::from_micros(200);
+const MULTI_CLICK_GAP: Duration = Duration::from_millis(40);
 
 #[cfg(target_os = "linux")]
 const SPIN_MARGIN: Duration = Duration::from_micros(200);
@@ -42,7 +43,6 @@ fn click_series(shared: &SharedState, backend: &mut dyn Backend, initial: Snapsh
     }
 
     let mut deadline = Instant::now();
-    let mut held: Option<Button> = None;
 
     loop {
         let snapshot = shared.snapshot();
@@ -50,37 +50,76 @@ fn click_series(shared: &SharedState, backend: &mut dyn Backend, initial: Snapsh
             break;
         }
 
-        let period = jittered_period(snapshot.settings, rng);
-        let hold = clamp_hold(snapshot.settings.hold, period);
+        let settings = snapshot.settings;
+        let period = jittered_period(settings, rng);
+        let hold = clamp_hold(settings.hold, period);
 
         if !sleep_until(deadline, shared, initial.version) {
             break;
         }
 
-        let button = snapshot.settings.button;
-        if let Err(error) = backend.press(button) {
-            shared.set_error(format!("press failed: {error:#}"));
-            shared.off();
-            break;
-        }
-        held = Some(button);
+        let button = settings.button;
 
-        // Even when the stop flag interrupts the hold, the button is released below.
-        let completed = sleep_until(deadline + hold, shared, initial.version);
-        if let Err(error) = backend.release(button) {
-            shared.set_error(format!("release failed: {error:#}"));
-            shared.off();
-            break;
-        }
-        held = None;
-        let limit_reached = shared.record_click();
+        if let Some(target) = settings.target {
+            if !backend.supports_target() {
+                shared.set_error(
+                    "clicking at a fixed point is not supported on this platform".to_string(),
+                );
+                shared.off();
+                break;
+            }
 
-        if !completed {
-            break;
+            if let Err(error) = backend.move_to(target) {
+                shared.set_error(format!("cursor move failed: {error:#}"));
+                shared.off();
+                break;
+            }
+        }
+
+        let mut interrupted = false;
+        let mut limit_reached = false;
+
+        for index in 0..settings.multi_click.max(1) {
+            if let Err(error) = backend.press(button) {
+                shared.set_error(format!("press failed: {error:#}"));
+                shared.off();
+                interrupted = true;
+                break;
+            }
+
+            // Even when the stop flag interrupts the hold, the button is
+            // released immediately afterwards.
+            let completed = sleep_until(Instant::now() + hold, shared, initial.version);
+            if let Err(error) = backend.release(button) {
+                shared.set_error(format!("release failed: {error:#}"));
+                shared.off();
+                interrupted = true;
+                break;
+            }
+
+            let reached = shared.record_click();
+            if !completed {
+                interrupted = true;
+                break;
+            }
+            if reached {
+                limit_reached = true;
+                break;
+            }
+
+            if index + 1 < settings.multi_click
+                && !sleep_until(Instant::now() + MULTI_CLICK_GAP, shared, initial.version)
+            {
+                interrupted = true;
+                break;
+            }
         }
 
         if limit_reached {
             shared.stop(StopReason::Limit);
+            break;
+        }
+        if interrupted {
             break;
         }
 
@@ -88,10 +127,6 @@ fn click_series(shared: &SharedState, backend: &mut dyn Backend, initial: Snapsh
         if deadline <= Instant::now() {
             deadline = Instant::now();
         }
-    }
-
-    if let Some(button) = held {
-        let _ = backend.release(button);
     }
 }
 
@@ -170,28 +205,40 @@ impl Rng {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::state::{Button, Point};
 
     struct MockBackend {
         presses: Arc<AtomicUsize>,
         releases: Arc<AtomicUsize>,
+        moves: Arc<Mutex<Vec<Point>>>,
         down: bool,
     }
 
     impl MockBackend {
-        fn new() -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        #[allow(clippy::type_complexity)]
+        fn new() -> (
+            Self,
+            Arc<AtomicUsize>,
+            Arc<AtomicUsize>,
+            Arc<Mutex<Vec<Point>>>,
+        ) {
             let presses = Arc::new(AtomicUsize::new(0));
             let releases = Arc::new(AtomicUsize::new(0));
+            let moves = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
                     presses: presses.clone(),
                     releases: releases.clone(),
+                    moves: moves.clone(),
                     down: false,
                 },
                 presses,
                 releases,
+                moves,
             )
         }
     }
@@ -210,21 +257,32 @@ mod tests {
             self.releases.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+
+        fn move_to(&mut self, point: Point) -> anyhow::Result<()> {
+            self.moves.lock().unwrap().push(point);
+            Ok(())
+        }
+
+        fn supports_target(&self) -> bool {
+            true
+        }
     }
 
+    #[allow(clippy::type_complexity)]
     fn spawn_clicker(
         settings: Settings,
     ) -> (
         Arc<SharedState>,
         Arc<AtomicUsize>,
         Arc<AtomicUsize>,
+        Arc<Mutex<Vec<Point>>>,
         thread::JoinHandle<()>,
     ) {
         let shared = Arc::new(SharedState::new(settings, true));
-        let (backend, presses, releases) = MockBackend::new();
+        let (backend, presses, releases, moves) = MockBackend::new();
         let thread_shared = shared.clone();
         let handle = thread::spawn(move || run(thread_shared, Box::new(backend)));
-        (shared, presses, releases, handle)
+        (shared, presses, releases, moves, handle)
     }
 
     #[test]
@@ -233,7 +291,7 @@ mod tests {
             .unwrap()
             .with_limit(5)
             .unwrap();
-        let (shared, presses, releases, handle) = spawn_clicker(settings);
+        let (shared, presses, releases, _moves, handle) = spawn_clicker(settings);
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while shared.status().enabled && Instant::now() < deadline {
@@ -261,7 +319,7 @@ mod tests {
             .unwrap()
             .with_delay_ms(150.0)
             .unwrap();
-        let (shared, presses, releases, handle) = spawn_clicker(settings);
+        let (shared, presses, releases, _moves, handle) = spawn_clicker(settings);
         let started = Instant::now();
 
         thread::sleep(Duration::from_millis(50));
@@ -293,7 +351,7 @@ mod tests {
     #[test]
     fn stopping_during_the_start_delay_cancels_the_session() {
         let settings = Settings::default().with_delay_ms(300.0).unwrap();
-        let (shared, presses, releases, handle) = spawn_clicker(settings);
+        let (shared, presses, releases, _moves, handle) = spawn_clicker(settings);
 
         thread::sleep(Duration::from_millis(50));
         shared.off();
@@ -343,7 +401,7 @@ mod tests {
     #[test]
     fn presses_and_releases_are_paired() {
         let settings = Settings::new(200.0, Button::Left, 1.0, 0.0).unwrap();
-        let (shared, presses, releases, handle) = spawn_clicker(settings);
+        let (shared, presses, releases, _moves, handle) = spawn_clicker(settings);
 
         thread::sleep(Duration::from_millis(150));
         shared.quit();
@@ -358,7 +416,7 @@ mod tests {
     #[test]
     fn stopping_during_a_hold_releases_the_button() {
         let settings = Settings::new(1.0, Button::Left, 400.0, 0.0).unwrap();
-        let (shared, presses, releases, handle) = spawn_clicker(settings);
+        let (shared, presses, releases, _moves, handle) = spawn_clicker(settings);
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while presses.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
@@ -383,6 +441,77 @@ mod tests {
             "release took {:?}",
             stopped_at.elapsed()
         );
+
+        shared.quit();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn multi_click_sends_a_series_and_counts_each_click() {
+        let settings = Settings::new(50.0, Button::Left, 1.0, 0.0)
+            .unwrap()
+            .with_multi_click(3)
+            .unwrap()
+            .with_limit(3)
+            .unwrap();
+        let (shared, presses, releases, _moves, handle) = spawn_clicker(settings);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while shared.status().enabled && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let status = shared.status();
+        assert!(!status.enabled);
+        assert_eq!(status.stop_reason, Some(StopReason::Limit));
+        assert_eq!(presses.load(Ordering::SeqCst), 3);
+        assert_eq!(releases.load(Ordering::SeqCst), 3);
+
+        shared.quit();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn multi_click_stops_mid_burst_when_the_limit_is_reached() {
+        let settings = Settings::new(50.0, Button::Left, 1.0, 0.0)
+            .unwrap()
+            .with_multi_click(3)
+            .unwrap()
+            .with_limit(2)
+            .unwrap();
+        let (shared, presses, releases, _moves, handle) = spawn_clicker(settings);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while shared.status().enabled && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(presses.load(Ordering::SeqCst), 2);
+        assert_eq!(releases.load(Ordering::SeqCst), 2);
+        assert_eq!(shared.status().stop_reason, Some(StopReason::Limit));
+
+        shared.quit();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn target_is_moved_before_the_burst() {
+        let point = Point::new(10, -20);
+        let settings = Settings::new(50.0, Button::Left, 1.0, 0.0)
+            .unwrap()
+            .with_target(Some(point))
+            .unwrap()
+            .with_limit(1)
+            .unwrap();
+        let (shared, presses, _releases, moves, handle) = spawn_clicker(settings);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while shared.status().enabled && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(presses.load(Ordering::SeqCst), 1);
+        assert_eq!(*moves.lock().unwrap(), vec![point]);
 
         shared.quit();
         handle.join().unwrap();

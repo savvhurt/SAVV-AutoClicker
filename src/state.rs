@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 pub const MAX_LIMIT: u64 = 1_000_000_000;
 pub const MAX_DELAY_MS: f64 = 10_000.0;
+pub const MAX_MULTI_CLICK: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
@@ -43,6 +44,18 @@ impl FromStr for Button {
             "middle" => Ok(Self::Middle),
             _ => bail!("unknown button `{value}` (expected left, right or middle)"),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Point {
+    pub fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
     }
 }
 
@@ -86,6 +99,8 @@ pub struct Settings {
     pub jitter_pct: f64,
     pub limit: u64,
     pub delay: Duration,
+    pub multi_click: u8,
+    pub target: Option<Point>,
 }
 
 impl Default for Settings {
@@ -97,6 +112,8 @@ impl Default for Settings {
             jitter_pct: 0.0,
             limit: 0,
             delay: Duration::ZERO,
+            multi_click: 1,
+            target: None,
         }
     }
 }
@@ -120,6 +137,8 @@ impl Settings {
             jitter_pct,
             limit: 0,
             delay: Duration::ZERO,
+            multi_click: 1,
+            target: None,
         })
     }
 
@@ -136,6 +155,19 @@ impl Settings {
             bail!("delay-ms must be between 0 and {MAX_DELAY_MS}");
         }
         self.delay = Duration::from_secs_f64(delay_ms / 1000.0);
+        Ok(self)
+    }
+
+    pub fn with_multi_click(mut self, multi_click: u8) -> Result<Self> {
+        if !(1..=MAX_MULTI_CLICK).contains(&multi_click) {
+            bail!("multi-click must be between 1 and {MAX_MULTI_CLICK}");
+        }
+        self.multi_click = multi_click;
+        Ok(self)
+    }
+
+    pub fn with_target(mut self, target: Option<Point>) -> Result<Self> {
+        self.target = target;
         Ok(self)
     }
 
@@ -158,12 +190,24 @@ impl Settings {
 
         // Keep the legacy four-field command when the optional features are
         // unused so an older daemon can still handle basic `on`/`set` calls.
-        if self.limit != 0 || !self.delay.is_zero() {
+        if self.limit != 0
+            || !self.delay.is_zero()
+            || self.multi_click != 1
+            || self.target.is_some()
+        {
             wire.push_str(&format!(
                 " {} {}",
                 self.limit,
                 format_number(self.delay_ms())
             ));
+        }
+
+        if self.multi_click != 1 || self.target.is_some() {
+            wire.push_str(&format!(" {}", self.multi_click));
+        }
+
+        if let Some(target) = self.target {
+            wire.push_str(&format!(" {} {}", target.x, target.y));
         }
 
         wire
@@ -235,9 +279,14 @@ impl Status {
             .unwrap_or("none")
             .replace(['\n', '\r'], " ");
         let stop_reason = self.stop_reason.map(StopReason::as_str).unwrap_or("none");
+        let target = self
+            .settings
+            .target
+            .map(|point| format!("{},{}", point.x, point.y))
+            .unwrap_or_else(|| String::from("none"));
 
         format!(
-            "OK\nprotocol: {}\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nlimit: {}\ndelay_ms: {}\nactual_cps: {:.1}\nclicks: {}\nsession_clicks: {}\nstarting: {}\ndelay_left_ms: {}\nstop_reason: {}\nhotkey: {}\nhotkey_active: {}\nhold_hotkey: {}\nhold_hotkey_active: {}\nhold_active: {}\nhotkey_paused: {}\nhotkey_error: {}\nerror: {}\n",
+            "OK\nprotocol: {}\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nlimit: {}\ndelay_ms: {}\nmulti_click: {}\ntarget: {}\nactual_cps: {:.1}\nclicks: {}\nsession_clicks: {}\nstarting: {}\ndelay_left_ms: {}\nstop_reason: {}\nhotkey: {}\nhotkey_active: {}\nhold_hotkey: {}\nhold_hotkey_active: {}\nhold_active: {}\nhotkey_paused: {}\nhotkey_error: {}\nerror: {}\n",
             self.protocol,
             self.enabled,
             format_number(self.settings.cps),
@@ -246,6 +295,8 @@ impl Status {
             format_number(self.settings.jitter_pct),
             self.settings.limit,
             format_number(self.settings.delay_ms()),
+            self.settings.multi_click,
+            target,
             self.actual_cps,
             self.clicks,
             self.session_clicks,
@@ -283,6 +334,8 @@ impl Status {
         let mut jitter_pct = None;
         let mut limit = None;
         let mut delay_ms = None;
+        let mut multi_click = None;
+        let mut target = None;
         let mut actual_cps = None;
         let mut clicks = None;
         let mut session_clicks = None;
@@ -313,6 +366,17 @@ impl Status {
                 "jitter_pct" => jitter_pct = Some(value.parse::<f64>()?),
                 "limit" => limit = Some(value.parse::<u64>()?),
                 "delay_ms" => delay_ms = Some(value.parse::<f64>()?),
+                "multi_click" => multi_click = Some(value.parse::<u8>()?),
+                "target" => {
+                    target = if value.is_empty() || value.eq_ignore_ascii_case("none") {
+                        None
+                    } else {
+                        let (x, y) = value
+                            .split_once(',')
+                            .ok_or_else(|| anyhow::anyhow!("malformed target `{value}`"))?;
+                        Some(Point::new(x.trim().parse()?, y.trim().parse()?))
+                    };
+                }
                 "actual_cps" => actual_cps = Some(value.parse::<f64>()?),
                 "clicks" => clicks = Some(value.parse::<u64>()?),
                 "session_clicks" => session_clicks = Some(value.parse::<u64>()?),
@@ -370,7 +434,9 @@ impl Status {
             jitter_pct.ok_or_else(|| anyhow::anyhow!("status is missing `jitter_pct`"))?,
         )?
         .with_limit(limit.unwrap_or(0))?
-        .with_delay_ms(delay_ms.unwrap_or(0.0))?;
+        .with_delay_ms(delay_ms.unwrap_or(0.0))?
+        .with_multi_click(multi_click.unwrap_or(1))?
+        .with_target(target)?;
 
         Ok(Self {
             protocol: protocol.unwrap_or(0),
@@ -824,6 +890,24 @@ mod tests {
 
         let extended = base.with_limit(500).unwrap().with_delay_ms(250.0).unwrap();
         assert_eq!(extended.to_wire_command("ON"), "ON 125 left 10 0 500 250");
+
+        let multi = base.with_multi_click(3).unwrap();
+        assert_eq!(multi.to_wire_command("ON"), "ON 125 left 10 0 0 0 3");
+
+        let target = base.with_target(Some(Point::new(-10, 20))).unwrap();
+        assert_eq!(
+            target.to_wire_command("ON"),
+            "ON 125 left 10 0 0 0 1 -10 20"
+        );
+    }
+
+    #[test]
+    fn settings_validate_multi_click() {
+        let base = Settings::default();
+        assert!(base.with_multi_click(1).is_ok());
+        assert!(base.with_multi_click(3).is_ok());
+        assert!(base.with_multi_click(0).is_err());
+        assert!(base.with_multi_click(4).is_err());
     }
 
     #[test]
@@ -856,6 +940,10 @@ mod tests {
             .with_limit(500)
             .unwrap()
             .with_delay_ms(250.0)
+            .unwrap()
+            .with_multi_click(3)
+            .unwrap()
+            .with_target(Some(Point::new(-1920, 1080)))
             .unwrap();
         let status = Status {
             protocol: PROTOCOL,
@@ -905,6 +993,8 @@ mod tests {
         assert_eq!(parsed.hotkey_active, "");
         assert_eq!(parsed.settings.limit, 0);
         assert_eq!(parsed.settings.delay, Duration::ZERO);
+        assert_eq!(parsed.settings.multi_click, 1);
+        assert_eq!(parsed.settings.target, None);
         assert_eq!(parsed.session_clicks, 0);
         assert!(!parsed.starting);
         assert!(!parsed.hotkey_paused);

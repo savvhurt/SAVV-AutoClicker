@@ -6,7 +6,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::hotkey::{DEFAULT as DEFAULT_HOTKEY, Hotkey};
-use crate::state::{Button, Settings};
+use crate::i18n::Language;
+use crate::state::{Button, Point, Settings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -44,12 +45,34 @@ pub struct Config {
     pub hotkey: String,
     pub hold_hotkey: String,
     pub theme: ThemeMode,
+    pub language: Language,
 }
 
 #[derive(Clone, Debug)]
 pub struct Loaded {
     pub config: Config,
     pub warning: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+struct PersistedPoint {
+    x: i32,
+    y: i32,
+}
+
+impl From<Point> for PersistedPoint {
+    fn from(point: Point) -> Self {
+        Self {
+            x: point.x,
+            y: point.y,
+        }
+    }
+}
+
+impl From<PersistedPoint> for Point {
+    fn from(point: PersistedPoint) -> Self {
+        Self::new(point.x, point.y)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,12 +85,18 @@ struct PersistedSettings {
     limit: u64,
     #[serde(default)]
     delay_ms: f64,
+    #[serde(default = "default_multi_click")]
+    multi_click: u8,
+    #[serde(default)]
+    target: Option<PersistedPoint>,
     #[serde(default = "default_hotkey")]
     hotkey: String,
     #[serde(default)]
     hold_hotkey: String,
     #[serde(default = "default_theme")]
     theme: String,
+    #[serde(default = "default_language")]
+    language: String,
 }
 
 impl PersistedSettings {
@@ -79,9 +108,12 @@ impl PersistedSettings {
             jitter_pct: config.settings.jitter_pct,
             limit: config.settings.limit,
             delay_ms: config.settings.delay_ms(),
+            multi_click: config.settings.multi_click,
+            target: config.settings.target.map(PersistedPoint::from),
             hotkey: config.hotkey.clone(),
             hold_hotkey: config.hold_hotkey.clone(),
             theme: config.theme.as_str().to_string(),
+            language: config.language.as_str().to_string(),
         }
     }
 }
@@ -94,12 +126,21 @@ fn default_theme() -> String {
     ThemeMode::Light.as_str().to_string()
 }
 
+fn default_multi_click() -> u8 {
+    1
+}
+
+fn default_language() -> String {
+    Language::Auto.as_str().to_string()
+}
+
 pub fn load() -> Loaded {
     let fallback = || Config {
         settings: Settings::default(),
         hotkey: default_hotkey(),
         hold_hotkey: String::new(),
         theme: ThemeMode::Light,
+        language: Language::Auto,
     };
 
     let path = match config_path() {
@@ -107,7 +148,7 @@ pub fn load() -> Loaded {
         Err(error) => {
             return Loaded {
                 config: fallback(),
-                warning: Some(format!("Не удалось определить путь к конфигу: {error:#}")),
+                warning: Some(format!("Could not determine the config path: {error:#}")),
             };
         }
     };
@@ -124,7 +165,7 @@ pub fn load() -> Loaded {
             return Loaded {
                 config: fallback(),
                 warning: Some(format!(
-                    "Не удалось прочитать {}: {error}. Используются значения по умолчанию.",
+                    "Could not read {}: {error}. Using defaults.",
                     path.display()
                 )),
             };
@@ -137,7 +178,7 @@ pub fn load() -> Loaded {
             return Loaded {
                 config: fallback(),
                 warning: Some(format!(
-                    "Не удалось прочитать {}: {error:#}. Используются значения по умолчанию.",
+                    "Could not parse {}: {error:#}. Using defaults.",
                     path.display()
                 )),
             };
@@ -146,17 +187,10 @@ pub fn load() -> Loaded {
 
     let mut warnings = Vec::new();
 
-    let settings = match parse_settings(
-        persisted.cps,
-        &persisted.button,
-        persisted.hold_ms,
-        persisted.jitter_pct,
-        persisted.limit,
-        persisted.delay_ms,
-    ) {
+    let settings = match parse_settings(&persisted) {
         Ok(settings) => settings,
         Err(error) => {
-            warnings.push(format!("Настройки кликов некорректны: {error:#}"));
+            warnings.push(format!("Invalid click settings: {error:#}"));
             Settings::default()
         }
     };
@@ -165,7 +199,7 @@ pub fn load() -> Loaded {
         Ok(hotkey) => hotkey.to_string(),
         Err(error) => {
             warnings.push(format!(
-                "Некорректная горячая клавиша: {error:#}. Используется {}.",
+                "Invalid hotkey: {error:#}. Using {}.",
                 DEFAULT_HOTKEY
             ));
             default_hotkey()
@@ -178,7 +212,7 @@ pub fn load() -> Loaded {
         match Hotkey::parse(&persisted.hold_hotkey) {
             Ok(hotkey) => hotkey.to_string(),
             Err(error) => {
-                warnings.push(format!("Некорректная клавиша удержания: {error:#}."));
+                warnings.push(format!("Invalid hold key: {error:#}."));
                 String::new()
             }
         }
@@ -187,11 +221,19 @@ pub fn load() -> Loaded {
     let theme = match ThemeMode::parse(&persisted.theme) {
         Some(theme) => theme,
         None => {
-            warnings.push(format!(
-                "Неизвестная тема `{}`. Используется светлая.",
-                persisted.theme
-            ));
+            warnings.push(format!("Unknown theme `{}`. Using light.", persisted.theme));
             ThemeMode::Light
+        }
+    };
+
+    let language = match Language::parse(&persisted.language) {
+        Some(language) => language,
+        None => {
+            warnings.push(format!(
+                "Unknown language `{}`. Using automatic detection.",
+                persisted.language
+            ));
+            Language::Auto
         }
     };
 
@@ -201,48 +243,36 @@ pub fn load() -> Loaded {
             hotkey,
             hold_hotkey,
             theme,
+            language,
         },
         warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
     }
 }
 
-fn parse_settings(
-    cps: f64,
-    button: &str,
-    hold_ms: f64,
-    jitter_pct: f64,
-    limit: u64,
-    delay_ms: f64,
-) -> Result<Settings> {
-    Settings::new(cps, button.parse::<Button>()?, hold_ms, jitter_pct)?
-        .with_limit(limit)?
-        .with_delay_ms(delay_ms)
+fn parse_settings(persisted: &PersistedSettings) -> Result<Settings> {
+    Settings::new(
+        persisted.cps,
+        persisted.button.parse::<Button>()?,
+        persisted.hold_ms,
+        persisted.jitter_pct,
+    )?
+    .with_limit(persisted.limit)?
+    .with_delay_ms(persisted.delay_ms)?
+    .with_multi_click(persisted.multi_click)?
+    .with_target(persisted.target.map(Point::from))
 }
 
-pub fn save(config: &Config) -> Result<()> {
-    let path = config_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let text = serialize(config)?;
-    fs::write(&path, text).with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
+pub fn config_path() -> Result<PathBuf> {
+    let directory = config_directory()
+        .ok_or_else(|| anyhow::anyhow!("the user configuration directory is not set"))?;
+    Ok(directory.join("autoclicker").join("gui.toml"))
 }
 
 #[cfg(test)]
 pub fn parse(text: &str) -> Result<Settings> {
     let persisted: PersistedSettings =
         toml::from_str(text).context("invalid TOML configuration")?;
-    parse_settings(
-        persisted.cps,
-        &persisted.button,
-        persisted.hold_ms,
-        persisted.jitter_pct,
-        persisted.limit,
-        persisted.delay_ms,
-    )
+    parse_settings(&persisted)
 }
 
 pub fn serialize(config: &Config) -> Result<String> {
@@ -250,10 +280,32 @@ pub fn serialize(config: &Config) -> Result<String> {
         .context("failed to serialize GUI settings")
 }
 
-pub fn config_path() -> Result<PathBuf> {
-    let directory = config_directory()
-        .ok_or_else(|| anyhow::anyhow!("the user configuration directory is not set"))?;
-    Ok(directory.join("autoclicker").join("gui.toml"))
+pub fn save(config: &Config) -> Result<()> {
+    let path = config_path()?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+
+    let text = serialize(config)?;
+    let temporary = parent.join(format!(".gui.toml.{}.tmp", std::process::id()));
+    fs::write(&temporary, text)
+        .with_context(|| format!("failed to write {}", temporary.display()))?;
+
+    match fs::rename(&temporary, &path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // `rename` does not replace an existing file on Windows.
+            if path.exists()
+                && fs::remove_file(&path).is_ok()
+                && fs::rename(&temporary, &path).is_ok()
+            {
+                return Ok(());
+            }
+            let _ = fs::remove_file(&temporary);
+            Err(error).with_context(|| format!("failed to replace {}", path.display()))
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -285,10 +337,15 @@ mod tests {
                 .with_limit(500)
                 .unwrap()
                 .with_delay_ms(250.0)
+                .unwrap()
+                .with_multi_click(2)
+                .unwrap()
+                .with_target(Some(Point::new(10, -20)))
                 .unwrap(),
             hotkey: "f8".to_string(),
             hold_hotkey: "alt+space".to_string(),
             theme: ThemeMode::Dark,
+            language: Language::De,
         }
     }
 
@@ -301,12 +358,17 @@ mod tests {
         assert_eq!(parsed.hotkey, "f8");
         assert_eq!(parsed.hold_hotkey, "alt+space");
         assert_eq!(parsed.theme, "dark");
+        assert_eq!(parsed.language, "de");
+        assert_eq!(parsed.multi_click, 2);
+        assert_eq!(parsed.target.map(Point::from), Some(Point::new(10, -20)));
         assert!(!text.contains("profiles"));
         assert!(!text.contains("active_profile"));
 
         let settings = parse(&text).unwrap();
         assert_eq!(settings.limit, 500);
         assert!((settings.delay_ms() - 250.0).abs() < 1e-9);
+        assert_eq!(settings.multi_click, 2);
+        assert_eq!(settings.target, Some(Point::new(10, -20)));
     }
 
     #[test]
@@ -315,6 +377,8 @@ mod tests {
             parse("cps = 50\nbutton = \"left\"\nhold_ms = 10\njitter_pct = 0\n").unwrap();
         assert_eq!(settings.limit, 0);
         assert_eq!(settings.delay_ms(), 0.0);
+        assert_eq!(settings.multi_click, 1);
+        assert_eq!(settings.target, None);
     }
 
     #[test]

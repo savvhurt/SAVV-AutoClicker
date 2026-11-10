@@ -13,7 +13,7 @@ use interprocess::local_socket::{
 };
 
 use crate::platform;
-use crate::state::{Button, Settings, SharedState};
+use crate::state::{Button, Point, Settings, SharedState};
 
 #[cfg(unix)]
 fn socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
@@ -350,6 +350,26 @@ fn parse_settings(
             .map_err(|_| "ERR invalid delay_ms\n".to_string())?,
         None => 0.0,
     };
+    let multi_click = match parts.next() {
+        Some(value) => value
+            .parse::<u8>()
+            .map_err(|_| "ERR invalid multi_click\n".to_string())?,
+        None => 1,
+    };
+    let target = match parts.next() {
+        Some(x) => {
+            let x = x
+                .parse::<i32>()
+                .map_err(|_| "ERR invalid target x\n".to_string())?;
+            let y = parts
+                .next()
+                .ok_or_else(|| "ERR target requires both x and y\n".to_string())?
+                .parse::<i32>()
+                .map_err(|_| "ERR invalid target y\n".to_string())?;
+            Some(Point::new(x, y))
+        }
+        None => None,
+    };
 
     if parts.next().is_some() {
         return Err(format!("ERR too many arguments for {command}\n"));
@@ -358,6 +378,8 @@ fn parse_settings(
     Settings::new(cps, button, hold_ms, jitter_pct)
         .and_then(|settings| settings.with_limit(limit))
         .and_then(|settings| settings.with_delay_ms(delay_ms))
+        .and_then(|settings| settings.with_multi_click(multi_click))
+        .and_then(|settings| settings.with_target(target))
         .map_err(|error| format!("ERR {error}\n"))
 }
 
@@ -432,13 +454,36 @@ mod tests {
     }
 
     #[test]
+    fn set_command_accepts_multi_click_and_target() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert_eq!(
+            process("SET 125 right 5 10 0 0 3 -1920 1080", &shared),
+            "OK\n"
+        );
+
+        let status = shared.status();
+        assert_eq!(status.settings.multi_click, 3);
+        assert_eq!(status.settings.target, Some(Point::new(-1920, 1080)));
+    }
+
+    #[test]
+    fn target_requires_both_coordinates() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert!(process("SET 50 left 10 0 0 0 1 100", &shared).starts_with("ERR "));
+        assert!(process("SET 50 left 10 0 0 0 1 100 200 300", &shared).starts_with("ERR "));
+        assert_eq!(shared.status().settings.target, None);
+    }
+
+    #[test]
     fn invalid_on_command_is_rejected() {
         let shared = SharedState::new(Settings::default(), false);
 
         assert!(process("ON 0 left 10 0", &shared).starts_with("ERR "));
         assert!(process("ON 50 left 10", &shared).starts_with("ERR "));
         assert!(process("ON 50 side 10 0", &shared).starts_with("ERR "));
-        assert!(process("ON 50 left 10 0 1 2 3", &shared).starts_with("ERR "));
+        assert!(process("ON 50 left 10 0 1 2 3 4", &shared).starts_with("ERR "));
         assert!(!shared.status().enabled);
     }
 

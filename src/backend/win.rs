@@ -2,10 +2,11 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
-use windows::Win32::Foundation::{LPARAM, WPARAM};
+use anyhow::{Context, Result, bail};
+use windows::Win32::Foundation::{LPARAM, POINT, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_MOUSE, MOD_NOREPEAT, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
@@ -13,12 +14,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEINPUT, RegisterHotKey, SendInput, UnregisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, KillTimer, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetTimer,
-    WM_HOTKEY, WM_TIMER,
+    GetCursorPos, GetMessageW, KillTimer, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW,
+    SetCursorPos, SetTimer, WM_HOTKEY, WM_TIMER,
 };
 
 use crate::hotkey::Hotkey;
-use crate::state::{Button, SharedState};
+use crate::state::{Button, Point, SharedState};
 
 pub struct WindowsBackend;
 
@@ -30,6 +31,24 @@ impl super::Backend for WindowsBackend {
     fn release(&mut self, button: Button) -> Result<()> {
         send(button, false)
     }
+
+    fn move_to(&mut self, point: Point) -> Result<()> {
+        move_cursor(point)
+    }
+
+    fn supports_target(&self) -> bool {
+        true
+    }
+}
+
+pub fn cursor_position() -> Result<Point> {
+    let mut point = POINT::default();
+    unsafe { GetCursorPos(&mut point) }.context("GetCursorPos failed")?;
+    Ok(Point::new(point.x, point.y))
+}
+
+fn move_cursor(point: Point) -> Result<()> {
+    unsafe { SetCursorPos(point.x, point.y) }.context("SetCursorPos failed")
 }
 
 fn send(button: Button, down: bool) -> Result<()> {
@@ -74,13 +93,13 @@ const WM_RELOAD_HOLD: u32 = 0x8000 + 2;
 const WM_PAUSE_HOTKEY: u32 = 0x8000 + 3;
 const WM_RESUME_HOTKEY: u32 = 0x8000 + 4;
 const TIMER_RESUME: usize = 1;
-const TIMER_HOLD_RELEASE: usize = 2;
 const PAUSE_TIMEOUT_MS: u32 = 30_000;
-const HOLD_POLL_MS: u32 = 15;
+const HOLD_POLL: Duration = Duration::from_millis(5);
 
 static HOTKEY_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static HOTKEY_REQUEST_LOCK: Mutex<()> = Mutex::new(());
 static HOTKEY_RESPONSE: Mutex<Option<Sender<std::result::Result<(), String>>>> = Mutex::new(None);
+static HOLD_TARGET: Mutex<Option<Hotkey>> = Mutex::new(None);
 
 #[derive(Clone)]
 struct Registration {
@@ -146,6 +165,38 @@ pub(crate) fn spawn_hotkey(
             };
             let _ = ready_tx.send(ready);
 
+            // `RegisterHotKey` only reports the initial key-down. Poll the key
+            // state on a dedicated thread so a release always stops the hold
+            // session, even when the hotkey message queue is busy.
+            let watcher_shared = shared.clone();
+            if let Err(error) =
+                thread::Builder::new()
+                    .name("hold-watcher".into())
+                    .spawn(move || {
+                        loop {
+                            thread::sleep(HOLD_POLL);
+
+                            let target = HOLD_TARGET.lock().unwrap().clone();
+                            let Some(hold) = target else {
+                                continue;
+                            };
+
+                            if !watcher_shared.status().hold_active {
+                                *HOLD_TARGET.lock().unwrap() = None;
+                                continue;
+                            }
+
+                            if !hold.is_down() {
+                                watcher_shared.hold_release();
+                                *HOLD_TARGET.lock().unwrap() = None;
+                            }
+                        }
+                    })
+            {
+                shared
+                    .set_hotkey_error(format!("failed to start the hold watcher thread: {error}"));
+            }
+
             let mut message = MSG::default();
             loop {
                 let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
@@ -154,7 +205,9 @@ pub(crate) fn spawn_hotkey(
                 }
 
                 match message.message {
-                    WM_HOTKEY => handle_hotkey_press(&shared, &registry, message.wParam.0 as i32),
+                    WM_HOTKEY => {
+                        handle_hotkey_press(&shared, &registry, message.wParam.0 as i32);
+                    }
                     WM_RELOAD_TOGGLE => handle_reload_toggle(&shared, &mut registry),
                     WM_RELOAD_HOLD => handle_reload_hold(&shared, &mut registry),
                     WM_PAUSE_HOTKEY => handle_pause(&shared, &mut registry),
@@ -163,9 +216,6 @@ pub(crate) fn spawn_hotkey(
                     }
                     WM_TIMER if message.wParam.0 == TIMER_RESUME => {
                         handle_resume(&shared, &mut registry, false);
-                    }
-                    WM_TIMER if message.wParam.0 == TIMER_HOLD_RELEASE => {
-                        handle_hold_release(&shared, &registry);
                     }
                     _ => {}
                 }
@@ -251,27 +301,12 @@ fn start_hold(
 fn handle_hotkey_press(shared: &SharedState, registry: &Registry, id: i32) {
     if registry.toggle.as_ref().is_some_and(|item| item.id == id) {
         shared.toggle();
-    } else if registry.hold.as_ref().is_some_and(|item| item.id == id)
-        && (shared.hold_press() || shared.status().hold_active)
-    {
-        // Re-arm the release poll even if the key-down event was repeated.
-        start_hold_timer();
-    }
-}
-
-fn handle_hold_release(shared: &SharedState, registry: &Registry) {
-    if !shared.status().hold_active {
-        stop_hold_timer();
-        return;
-    }
-
-    let still_down = registry
-        .hold
-        .as_ref()
-        .is_some_and(|item| item.hotkey.is_down());
-    if !still_down {
-        shared.hold_release();
-        stop_hold_timer();
+    } else if let Some(hold) = registry.hold.as_ref().filter(|item| item.id == id) {
+        if shared.hold_press() || shared.status().hold_active {
+            // Arm the watcher again on a repeated key-down. The watcher polls
+            // the physical key state, so the hold cannot turn into a toggle.
+            *HOLD_TARGET.lock().unwrap() = Some(hold.hotkey.clone());
+        }
     }
 }
 
@@ -523,10 +558,10 @@ fn handle_resume(shared: &SharedState, registry: &mut Registry, reply: bool) {
 }
 
 fn stop_hold_session(shared: &SharedState) {
+    *HOLD_TARGET.lock().unwrap() = None;
     if shared.status().hold_active {
         shared.hold_release();
     }
-    stop_hold_timer();
 }
 
 fn register_hotkey(id: i32, hotkey: &Hotkey) -> std::result::Result<(), String> {
@@ -564,14 +599,6 @@ fn respond(result: std::result::Result<(), String>) {
     if let Some(sender) = HOTKEY_RESPONSE.lock().unwrap().take() {
         let _ = sender.send(result);
     }
-}
-
-fn start_hold_timer() {
-    let _ = unsafe { SetTimer(None, TIMER_HOLD_RELEASE, HOLD_POLL_MS, None) };
-}
-
-fn stop_hold_timer() {
-    let _ = unsafe { KillTimer(None, TIMER_HOLD_RELEASE) };
 }
 
 fn schedule_resume_timer() {

@@ -1,9 +1,13 @@
+#[cfg(feature = "gui")]
+pub mod autostart;
 pub mod backend;
 pub mod cli;
 pub mod daemon;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod hotkey;
+#[cfg(feature = "gui")]
+pub mod i18n;
 pub mod ipc;
 pub mod platform;
 pub mod scheduler;

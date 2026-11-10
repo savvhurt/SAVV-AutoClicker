@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::state::{Button, Settings};
+use crate::state::{Button, Point, Settings};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -58,6 +58,18 @@ pub struct ClickArgs {
     /// Wait MS milliseconds before the first click (0 - 10000)
     #[arg(long, default_value_t = 0.0, value_name = "MS")]
     pub delay_ms: f64,
+
+    /// Clicks per pulse: 1, 2 (double) or 3 (triple)
+    #[arg(long, default_value_t = 1, value_name = "N", value_parser = clap::value_parser!(u8).range(1..=3))]
+    pub multi_click: u8,
+
+    /// Click at this X coordinate instead of the current cursor position
+    #[arg(long, value_name = "X", requires = "y")]
+    pub x: Option<i32>,
+
+    /// Click at this Y coordinate instead of the current cursor position
+    #[arg(long, value_name = "Y", requires = "x")]
+    pub y: Option<i32>,
 }
 
 #[derive(Args, Debug)]
@@ -110,9 +122,17 @@ impl From<ButtonArg> for Button {
 
 impl ClickArgs {
     pub fn to_settings(&self) -> Result<Settings> {
+        let target = match (self.x, self.y) {
+            (Some(x), Some(y)) => Some(Point::new(x, y)),
+            (None, None) => None,
+            _ => anyhow::bail!("--x and --y must be supplied together"),
+        };
+
         Settings::new(self.cps, self.button.into(), self.hold_ms, self.jitter_pct)?
             .with_limit(self.limit)?
-            .with_delay_ms(self.delay_ms)
+            .with_delay_ms(self.delay_ms)?
+            .with_multi_click(self.multi_click)?
+            .with_target(target)
     }
 
     pub fn to_wire_command(&self) -> Result<String> {

@@ -10,8 +10,9 @@ use super::config::{self, ThemeMode};
 use super::worker::{Command, Event, Worker};
 use super::{theme, widgets};
 
+use crate::i18n::{self, Key, Lang, Language};
 use crate::ipc;
-use crate::state::{Button, MAX_DELAY_MS, MAX_LIMIT, Settings, Status, StopReason};
+use crate::state::{Button, MAX_DELAY_MS, MAX_LIMIT, Point, Settings, Status, StopReason};
 
 const APPLY_DEBOUNCE: Duration = Duration::from_millis(250);
 const SYNC_GRACE: Duration = Duration::from_millis(800);
@@ -24,7 +25,9 @@ const LABEL_WIDTH: f32 = 90.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     Clicks,
+    Mode,
     Hotkeys,
+    System,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +53,8 @@ struct DraftSettings {
     jitter_pct: f64,
     limit: u64,
     delay_ms: f64,
+    multi_click: u8,
+    target: Option<Point>,
 }
 
 impl From<Settings> for DraftSettings {
@@ -61,6 +66,8 @@ impl From<Settings> for DraftSettings {
             jitter_pct: settings.jitter_pct,
             limit: settings.limit,
             delay_ms: settings.delay_ms(),
+            multi_click: settings.multi_click,
+            target: settings.target,
         }
     }
 }
@@ -70,6 +77,8 @@ impl DraftSettings {
         Settings::new(self.cps, self.button, self.hold_ms, self.jitter_pct)
             .and_then(|settings| settings.with_limit(self.limit))
             .and_then(|settings| settings.with_delay_ms(self.delay_ms))
+            .and_then(|settings| settings.with_multi_click(self.multi_click))
+            .and_then(|settings| settings.with_target(self.target))
             .map_err(|error| format!("{error:#}"))
     }
 }
@@ -81,6 +90,9 @@ pub struct GuiApp {
     hold_hotkey: String,
     recording: Option<RecordTarget>,
     theme_mode: ThemeMode,
+    language: Language,
+    lang: Lang,
+    autostart_enabled: bool,
     online: bool,
     enabled: bool,
     actual_cps: f64,
@@ -120,9 +132,16 @@ impl GuiApp {
     fn new(ctx: egui::Context) -> Self {
         let loaded = config::load();
         let config = loaded.config;
+        let lang = config.language.resolve();
         theme::install(&ctx, config.theme);
-        let worker = Worker::spawn(ctx, config.hotkey.clone(), config.hold_hotkey.clone())
-            .expect("failed to start the autoclicker GUI IPC worker");
+        let worker = Worker::spawn(
+            ctx,
+            config.hotkey.clone(),
+            config.hold_hotkey.clone(),
+            config.language,
+        )
+        .expect("failed to start the autoclicker GUI IPC worker");
+        let autostart_enabled = crate::autostart::is_enabled();
 
         Self {
             settings: config.settings.into(),
@@ -131,6 +150,9 @@ impl GuiApp {
             hold_hotkey: config.hold_hotkey,
             recording: None,
             theme_mode: config.theme,
+            language: config.language,
+            lang,
+            autostart_enabled,
             online: false,
             enabled: false,
             actual_cps: 0.0,
@@ -162,6 +184,31 @@ impl GuiApp {
             commands: worker.commands,
             events: worker.events,
         }
+    }
+
+    fn t(&self, key: Key) -> &'static str {
+        i18n::tr(self.lang, key)
+    }
+
+    /// Fill `{}`/`{:.1}` placeholders in a translated template in order.
+    fn fill(&self, key: Key, args: &[String]) -> String {
+        let mut result = String::new();
+        let mut rest = self.t(key);
+
+        for argument in args {
+            let Some(start) = rest.find('{') else {
+                break;
+            };
+            let Some(end) = rest[start..].find('}') else {
+                break;
+            };
+            result.push_str(&rest[..start]);
+            result.push_str(argument);
+            rest = &rest[start + end + 1..];
+        }
+
+        result.push_str(rest);
+        result
     }
 
     fn clear_daemon_state(&mut self) {
@@ -203,7 +250,7 @@ impl GuiApp {
                     self.clear_daemon_state();
                     self.offline_reason = None;
                     self.pending_toggle = None;
-                    self.notice = Some("Демон остановлен.".to_string());
+                    self.notice = Some(self.t(Key::DaemonStoppedNotice).to_string());
                 }
             }
         }
@@ -213,7 +260,7 @@ impl GuiApp {
             .is_some_and(|(_, sent_at)| sent_at.elapsed() > TOGGLE_TIMEOUT)
         {
             self.pending_toggle = None;
-            self.notice = Some("Демон не ответил на команду. Проверь его состояние.".to_string());
+            self.notice = Some(self.t(Key::ToggleTimeout).to_string());
         }
 
         if self.pending_toggle.is_some() || self.starting {
@@ -253,8 +300,7 @@ impl GuiApp {
             self.daemon_settings = None;
             self.daemon_hotkey_error = None;
             let resume = status.enabled.then_some(status.settings);
-            self.notice =
-                Some("Демон старой версии: перезапускаю его для новых настроек…".to_string());
+            self.notice = Some(self.t(Key::LegacyRestart).to_string());
             let _ = self.commands.send(Command::RestartDaemon {
                 hotkey: self.hotkey.clone(),
                 hold_hotkey: self.hold_hotkey.clone(),
@@ -265,13 +311,7 @@ impl GuiApp {
 
         if self.legacy_restart_pending && status.protocol >= crate::state::PROTOCOL {
             self.legacy_restart_pending = false;
-            if self
-                .notice
-                .as_deref()
-                .is_some_and(|text| text.starts_with("Демон старой версии"))
-            {
-                self.notice = None;
-            }
+            self.notice = None;
         }
 
         if status.hotkey == self.hotkey {
@@ -379,6 +419,7 @@ impl GuiApp {
                 hotkey: self.hotkey.clone(),
                 hold_hotkey: self.hold_hotkey.clone(),
                 theme: self.theme_mode,
+                language: self.language,
             })
     }
 
@@ -387,7 +428,7 @@ impl GuiApp {
             return;
         };
         if let Err(error) = config::save(&config) {
-            self.notice = Some(format!("Не удалось сохранить настройки: {error:#}"));
+            self.notice = Some(self.fill(Key::SaveFailed, &[format!("{error:#}")]));
         }
     }
 
@@ -400,13 +441,18 @@ impl GuiApp {
         self.theme_mode = self.theme_mode.toggled();
         theme::set_mode(ctx, self.theme_mode);
         self.save_config();
-        self.notice = Some(format!(
-            "Тема: {}.",
-            match self.theme_mode {
-                ThemeMode::Light => "светлая",
-                ThemeMode::Dark => "тёмная",
-            }
-        ));
+        let label = match self.theme_mode {
+            ThemeMode::Light => self.t(Key::ThemeLight),
+            ThemeMode::Dark => self.t(Key::ThemeDark),
+        };
+        self.notice = Some(self.fill(Key::ThemeNotice, &[label.to_string()]));
+    }
+
+    fn set_language(&mut self, language: Language) {
+        self.language = language;
+        self.lang = language.resolve();
+        let _ = self.commands.send(Command::SetLanguage(language));
+        self.save_config();
     }
 
     #[cfg(windows)]
@@ -485,9 +531,7 @@ impl GuiApp {
             Ok(hotkey) => hotkey,
             Err(error) => {
                 self.stop_recording(true);
-                self.notice = Some(format!(
-                    "Не удалось назначить клавишу: {error:#}. Поддерживаются A-Z, 0-9, F1-F24, Space, Tab, Enter, Esc, стрелки и знаки."
-                ));
+                self.notice = Some(self.fill(Key::BindingFailed, &[format!("{error:#}")]));
                 return;
             }
         };
@@ -497,7 +541,7 @@ impl GuiApp {
             RecordTarget::Toggle => {
                 if !self.hold_hotkey.is_empty() && combo == self.hold_hotkey {
                     self.stop_recording(true);
-                    self.notice = Some("Эта клавиша уже назначена для удержания.".to_string());
+                    self.notice = Some(self.t(Key::KeyAlreadyHold).to_string());
                     return;
                 }
                 self.stop_recording(true);
@@ -512,7 +556,7 @@ impl GuiApp {
             RecordTarget::Hold => {
                 if combo == self.hotkey {
                     self.stop_recording(true);
-                    self.notice = Some("Эта клавиша уже назначена для переключения.".to_string());
+                    self.notice = Some(self.t(Key::KeyAlreadyToggle).to_string());
                     return;
                 }
                 self.stop_recording(true);
@@ -535,14 +579,19 @@ impl GuiApp {
         let label = crate::hotkey::Hotkey::parse(bound)
             .map(|hotkey| hotkey.label())
             .unwrap_or_else(|_| bound.to_ascii_uppercase());
-        self.notice = Some(format!(
-            "{}: {}.",
-            match target {
-                RecordTarget::Toggle => "Переключение",
-                RecordTarget::Hold => "Удержание",
-            },
-            label
-        ));
+        self.notice = Some(
+            self.fill(
+                Key::BoundNotice,
+                &[
+                    match target {
+                        RecordTarget::Toggle => self.t(Key::RecordTargetToggle),
+                        RecordTarget::Hold => self.t(Key::RecordTargetHold),
+                    }
+                    .to_string(),
+                    label,
+                ],
+            ),
+        );
         self.save_config();
     }
 
@@ -552,7 +601,7 @@ impl GuiApp {
         self.daemon_hotkey_error = None;
         self.last_hold_hotkey_sync = Some(Instant::now());
         let _ = self.commands.send(Command::SetHoldHotkey(String::new()));
-        self.notice = Some("Клавиша удержания отключена.".to_string());
+        self.notice = Some(self.t(Key::HoldDisabled).to_string());
         self.save_config();
     }
 
@@ -576,7 +625,7 @@ impl GuiApp {
     #[cfg(not(windows))]
     fn request_quit(&mut self) {
         self.pending_toggle = None;
-        self.notice = Some("Завершаю демон…".to_string());
+        self.notice = Some(self.t(Key::Quitting).to_string());
         let _ = self.commands.send(Command::QuitDaemon);
     }
 
@@ -584,22 +633,22 @@ impl GuiApp {
         if let Some((start, _)) = self.pending_toggle {
             return (
                 if start {
-                    "ЗАПУСК"
+                    self.t(Key::StatusStarting)
                 } else {
-                    "ОСТАНОВКА"
+                    self.t(Key::StatusStopping)
                 },
                 theme::accent(),
                 true,
             );
         }
         if !self.online {
-            ("НЕТ СВЯЗИ", theme::dim(), false)
+            (self.t(Key::StatusOffline), theme::dim(), false)
         } else if self.starting {
-            ("ЗАДЕРЖКА", theme::warning(), true)
+            (self.t(Key::StatusDelay), theme::warning(), true)
         } else if self.enabled {
-            ("АКТИВЕН", theme::accent(), true)
+            (self.t(Key::StatusActive), theme::accent(), true)
         } else {
-            ("ОЖИДАНИЕ", theme::warning(), false)
+            (self.t(Key::StatusIdle), theme::warning(), false)
         }
     }
 
@@ -624,8 +673,13 @@ impl GuiApp {
                     let _ = response.on_hover_text(reason);
                 }
 
-                if widgets::theme_toggle(ui, self.theme_mode == ThemeMode::Dark)
-                    .on_hover_text("Переключить светлую и тёмную тему")
+                let theme_label = if self.theme_mode == ThemeMode::Dark {
+                    self.t(Key::ThemeLight)
+                } else {
+                    self.t(Key::ThemeDark)
+                };
+                if widgets::theme_toggle(ui, self.theme_mode == ThemeMode::Dark, theme_label)
+                    .on_hover_text(self.t(Key::ToggleTheme))
                     .clicked()
                 {
                     toggle_theme = true;
@@ -645,49 +699,55 @@ impl GuiApp {
         let (title, description) = if let Some(start) = pending {
             (
                 if start {
-                    "Запуск…"
+                    self.t(Key::HeroStarting)
                 } else {
-                    "Остановка…"
+                    self.t(Key::HeroStopping)
                 }
                 .to_string(),
-                "Ждём подтверждения от демона.".to_string(),
+                self.t(Key::HeroWaitDaemon).to_string(),
             )
         } else if self.starting {
             (
-                format!("Старт через {:.1} с", self.delay_left_ms as f64 / 1000.0),
-                "Клики начнутся после задержки. Выключение отменит запуск.".to_string(),
+                self.fill(
+                    Key::HeroDelayTitle,
+                    &[format!("{:.1}", self.delay_left_ms as f64 / 1000.0)],
+                ),
+                self.t(Key::HeroDelayText).to_string(),
             )
         } else if self.hold_active {
             (
-                "Удержание".to_string(),
-                "Клики идут, пока горячая клавиша зажата.".to_string(),
+                self.t(Key::HeroHoldTitle).to_string(),
+                self.t(Key::HeroHoldText).to_string(),
             )
         } else if active {
             let description = if self.settings.limit > 0 {
-                format!(
-                    "{} из {} кликов сессии.",
-                    self.session_clicks, self.settings.limit
+                self.fill(
+                    Key::HeroSessionProgress,
+                    &[
+                        group_digits(self.session_clicks),
+                        group_digits(self.settings.limit),
+                    ],
                 )
+            } else if self.settings.target.is_some() {
+                self.t(Key::HeroTargetClicks).to_string()
             } else {
-                "Импульсы уходят в текущую позицию курсора.".to_string()
+                self.t(Key::HeroCursorClicks).to_string()
             };
-            ("Клики идут".to_string(), description)
+            (self.t(Key::HeroClicking).to_string(), description)
         } else if self.stop_reason == Some(StopReason::Limit) {
             (
-                "Лимит выполнен".to_string(),
-                format!(
-                    "{} кликов сессии. Запустите снова или измените лимит.",
-                    self.session_clicks
-                ),
+                self.t(Key::HeroLimitDone).to_string(),
+                self.fill(Key::HeroLimitText, &[group_digits(self.session_clicks)]),
             )
         } else {
             (
-                "Клики остановлены".to_string(),
+                self.t(Key::HeroStopped).to_string(),
                 if self.online {
-                    "Нажмите кнопку, чтобы начать.".to_string()
+                    self.t(Key::HeroPressStart)
                 } else {
-                    "Демон запустится автоматически.".to_string()
-                },
+                    self.t(Key::HeroDaemonAuto)
+                }
+                .to_string(),
             )
         };
 
@@ -733,18 +793,28 @@ impl GuiApp {
         ui.columns(3, |columns| {
             metric(
                 &mut columns[0],
-                "ФАКТ. СКОРОСТЬ",
+                self.t(Key::MetricCps),
                 &format!("{:.1}", self.actual_cps),
                 "CPS",
             );
-            metric(&mut columns[1], "КЛИКОВ", &group_digits(self.clicks), "ШТ");
+            metric(
+                &mut columns[1],
+                self.t(Key::MetricClicks),
+                &group_digits(self.clicks),
+                self.t(Key::UnitPieces),
+            );
             let session = group_digits(self.session_clicks);
             let limit = if self.settings.limit > 0 {
                 format!("/ {}", group_digits(self.settings.limit))
             } else {
-                "ШТ".to_string()
+                self.t(Key::UnitPieces).to_string()
             };
-            metric(&mut columns[2], "СЕССИЯ", &session, &limit);
+            metric(
+                &mut columns[2],
+                self.t(Key::MetricSession),
+                &session,
+                &limit,
+            );
         });
         ui.add_space(2.0);
         theme::rule(ui);
@@ -752,42 +822,42 @@ impl GuiApp {
 
     fn notice_data(&self) -> (Color32, &'static str, String) {
         if let Some(error) = &self.daemon_error {
-            return (theme::danger(), "ОШИБКА", error.clone());
+            return (theme::danger(), self.t(Key::NoticeError), error.clone());
         }
         if let Some(notice) = &self.notice {
-            return (theme::warning(), "СИСТЕМА", notice.clone());
+            return (theme::warning(), self.t(Key::NoticeSystem), notice.clone());
         }
         if let Some(error) = &self.daemon_hotkey_error {
-            return (theme::danger(), "ХОТКЕЙ", error.clone());
+            return (theme::danger(), self.t(Key::NoticeHotkey), error.clone());
         }
         if self.starting {
             return (
                 theme::warning(),
-                "СТАРТ",
-                format!(
-                    "Клики начнутся через {:.1} с.",
-                    self.delay_left_ms as f64 / 1000.0
+                self.t(Key::NoticeStart),
+                self.fill(
+                    Key::NoticeStartsIn,
+                    &[format!("{:.1}", self.delay_left_ms as f64 / 1000.0)],
                 ),
             );
         }
         if self.stop_reason == Some(StopReason::Limit) && !self.enabled {
             return (
                 theme::warning(),
-                "ЛИМИТ",
-                format!("Выполнено {} кликов сессии.", self.session_clicks),
+                self.t(Key::NoticeLimit),
+                self.fill(Key::NoticeLimitDone, &[group_digits(self.session_clicks)]),
             );
         }
         if !self.online {
             return (
                 theme::dim(),
-                "ДЕМОН",
-                "Не запущен — стартует вместе с кликами.".to_string(),
+                self.t(Key::NoticeDaemon),
+                self.t(Key::NoticeDaemonDown).to_string(),
             );
         }
         (
             theme::dim(),
-            "ГОТОВО",
-            "Изменения применяются автоматически.".to_string(),
+            self.t(Key::NoticeReady),
+            self.t(Key::NoticeAutoApply).to_string(),
         )
     }
 
@@ -808,7 +878,12 @@ impl GuiApp {
             ui,
             "main_tabs",
             &mut tab,
-            &[(Tab::Clicks, "КЛИКИ"), (Tab::Hotkeys, "ГОРЯЧИЕ КЛАВИШИ")],
+            &[
+                (Tab::Clicks, self.t(Key::TabClicks)),
+                (Tab::Mode, self.t(Key::TabMode)),
+                (Tab::Hotkeys, self.t(Key::TabHotkeys)),
+                (Tab::System, self.t(Key::TabSystem)),
+            ],
         );
         if changed {
             self.tab = tab;
@@ -829,8 +904,8 @@ impl GuiApp {
 
         changed |= compact_slider_row(
             ui,
-            "Скорость",
-            "Частота кликов в секунду",
+            self.t(Key::RowSpeed),
+            self.t(Key::HintSpeed),
             &mut draft.cps,
             SliderSpec {
                 range: 0.2..=1000.0,
@@ -843,37 +918,33 @@ impl GuiApp {
 
         theme::rule(ui);
 
-        changed |= compact_choice_row(
-            ui,
-            "Кнопка",
-            "Какую кнопку мыши нажимать",
-            |ui| {
-                widgets::segmented(
-                    ui,
-                    "mouse_button",
-                    &mut draft.button,
-                    &[
-                        (Button::Left, "ЛЕВАЯ"),
-                        (Button::Right, "ПРАВАЯ"),
-                        (Button::Middle, "СРЕДНЯЯ"),
-                    ],
-                )
-            },
-        );
+        changed |= compact_choice_row(ui, self.t(Key::RowButton), self.t(Key::HintButton), |ui| {
+            widgets::segmented(
+                ui,
+                "mouse_button",
+                &mut draft.button,
+                &[
+                    (Button::Left, self.t(Key::ButtonLeft)),
+                    (Button::Right, self.t(Key::ButtonRight)),
+                    (Button::Middle, self.t(Key::ButtonMiddle)),
+                ],
+            )
+        });
 
         theme::rule(ui);
 
+        let ms = self.t(Key::UnitMs);
         changed |= compact_slider_row(
             ui,
-            "Удержание",
-            "Длительность нажатия; ограничивается периодом",
+            self.t(Key::RowHold),
+            self.t(Key::HintHold),
             &mut draft.hold_ms,
             SliderSpec {
                 range: 0.1..=5000.0,
                 logarithmic: false,
                 step: 0.1,
                 decimals: 2,
-                suffix: "МС",
+                suffix: ms,
             },
         );
 
@@ -881,8 +952,8 @@ impl GuiApp {
 
         changed |= compact_slider_row(
             ui,
-            "Джиттер",
-            "Случайный разброс интервала",
+            self.t(Key::RowJitter),
+            self.t(Key::HintJitter),
             &mut draft.jitter_pct,
             SliderSpec {
                 range: 0.0..=100.0,
@@ -895,28 +966,29 @@ impl GuiApp {
 
         theme::rule(ui);
 
+        let pieces = self.t(Key::UnitPieces);
         changed |= compact_integer_row(
             ui,
-            "Лимит",
-            "Сколько кликов сделать за сессию. 0 — без ограничения",
+            self.t(Key::RowLimit),
+            self.t(Key::HintLimit),
             &mut draft.limit,
             0..=MAX_LIMIT,
-            "ШТ",
+            pieces,
         );
 
         theme::rule(ui);
 
         changed |= compact_slider_row(
             ui,
-            "Задержка",
-            "Пауза перед началом новой сессии, 0 - 10000 мс",
+            self.t(Key::RowDelay),
+            self.t(Key::HintDelay),
             &mut draft.delay_ms,
             SliderSpec {
                 range: 0.0..=MAX_DELAY_MS,
                 logarithmic: false,
                 step: 10.0,
                 decimals: 0,
-                suffix: "МС",
+                suffix: ms,
             },
         );
 
@@ -925,24 +997,15 @@ impl GuiApp {
         let hint = if draft.hold_ms > effective_hold + 0.001 {
             (
                 theme::warning(),
-                format!(
-                    "Фактическое удержание {} мс: частота не даёт удержать дольше.",
-                    trim_number(effective_hold)
-                ),
+                self.fill(Key::HintHoldClamped, &[trim_number(effective_hold)]),
             )
         } else if draft.limit > 0 {
             (
                 theme::muted(),
-                format!(
-                    "Лимит {} кликов за сессию; 0 отключает лимит.",
-                    group_digits(draft.limit)
-                ),
+                self.fill(Key::HintLimitOn, &[group_digits(draft.limit)]),
             )
         } else {
-            (
-                theme::dim(),
-                "Лимит 0 — без ограничения. Задержка действует только на старте.".to_string(),
-            )
+            (theme::dim(), self.t(Key::HintLimitOff).to_string())
         };
         ui.add_space(2.0);
         ui.add(
@@ -955,6 +1018,268 @@ impl GuiApp {
         }
     }
 
+    fn draw_mode_tab(&mut self, ui: &mut Ui) {
+        ui.spacing_mut().item_spacing.y = if ui.ctx().content_rect().height() < 540.0 {
+            1.0
+        } else {
+            3.0
+        };
+        let mut draft = self.settings;
+        let mut changed = false;
+
+        let mut point_mode = draft.target.is_some();
+        let target_changed =
+            compact_choice_row(ui, self.t(Key::RowTarget), self.t(Key::HintTarget), |ui| {
+                widgets::segmented(
+                    ui,
+                    "click_target",
+                    &mut point_mode,
+                    &[
+                        (false, self.t(Key::TargetCursor)),
+                        (true, self.t(Key::TargetPoint)),
+                    ],
+                )
+            });
+        if target_changed {
+            draft.target = if point_mode {
+                Some(crate::backend::cursor_position().unwrap_or(Point::new(0, 0)))
+            } else {
+                None
+            };
+            changed = true;
+        }
+
+        let blocked = self.target_blocked_reason();
+        if let Some(reason) = blocked {
+            ui.add_space(2.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(self.t(reason))
+                        .font(theme::sans(9.5))
+                        .color(theme::warning()),
+                )
+                .wrap(),
+            );
+        }
+
+        if let Some(point) = &mut draft.target {
+            theme::rule(ui);
+            let mut pick = false;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let _ = row_label(ui, self.t(Key::RowCoords), self.t(Key::HintCoords), 20.0);
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::text_button(
+                        ui,
+                        self.t(Key::PickCurrent),
+                        theme::muted(),
+                        theme::accent(),
+                    )
+                    .clicked()
+                    {
+                        pick = true;
+                    }
+                    let remaining = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(remaining, 18.0),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            changed |= widgets::coordinate_field(ui, &mut point.x, "X");
+                            changed |= widgets::coordinate_field(ui, &mut point.y, "Y");
+                        },
+                    );
+                });
+            });
+
+            if pick {
+                match crate::backend::cursor_position() {
+                    Ok(position) => {
+                        point.x = position.x;
+                        point.y = position.y;
+                        changed = true;
+                        self.notice = Some(self.fill(
+                            Key::CurrentPicked,
+                            &[position.x.to_string(), position.y.to_string()],
+                        ));
+                    }
+                    Err(error) => {
+                        self.notice = Some(self.fill(Key::PickFailed, &[format!("{error:#}")]));
+                    }
+                }
+            }
+        }
+
+        theme::rule(ui);
+
+        let mut multi = draft.multi_click;
+        let multi_changed =
+            compact_choice_row(ui, self.t(Key::RowMulti), self.t(Key::HintMulti), |ui| {
+                widgets::segmented(
+                    ui,
+                    "multi_click",
+                    &mut multi,
+                    &[
+                        (1, self.t(Key::MultiOne)),
+                        (2, self.t(Key::MultiDouble)),
+                        (3, self.t(Key::MultiTriple)),
+                    ],
+                )
+            });
+        if multi_changed {
+            draft.multi_click = multi;
+            changed = true;
+        }
+
+        ui.add_space(3.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(self.t(Key::MultiHint))
+                    .font(theme::sans(9.5))
+                    .color(theme::dim()),
+            )
+            .wrap(),
+        );
+
+        if changed {
+            self.settings = draft;
+            self.mark_dirty();
+        }
+    }
+
+    fn draw_system_tab(&mut self, ui: &mut Ui) {
+        ui.spacing_mut().item_spacing.y = if ui.ctx().content_rect().height() < 540.0 {
+            1.0
+        } else {
+            3.0
+        };
+
+        let mut selected = self.language;
+        let _ = compact_choice_row(
+            ui,
+            self.t(Key::RowLanguage),
+            self.t(Key::HintLanguage),
+            |ui| {
+                egui::ComboBox::from_id_salt("language")
+                    .width(ui.available_width().min(190.0))
+                    .selected_text(selected.native_label())
+                    .show_ui(ui, |ui| {
+                        for language in Language::ALL {
+                            ui.selectable_value(&mut selected, language, language.native_label());
+                        }
+                    });
+                false
+            },
+        );
+        if selected != self.language {
+            self.set_language(selected);
+        }
+
+        theme::rule(ui);
+
+        let mut toggle_theme = false;
+        let _ = compact_choice_row(ui, self.t(Key::RowTheme), self.t(Key::HintTheme), |ui| {
+            let label = if self.theme_mode == ThemeMode::Dark {
+                self.t(Key::ThemeLight)
+            } else {
+                self.t(Key::ThemeDark)
+            };
+            let clicked =
+                widgets::theme_toggle(ui, self.theme_mode == ThemeMode::Dark, label).clicked();
+            if clicked {
+                toggle_theme = true;
+            }
+            clicked
+        });
+        if toggle_theme {
+            self.toggle_theme(ui.ctx());
+        }
+
+        theme::rule(ui);
+
+        if crate::autostart::SUPPORTED {
+            let mut enabled = self.autostart_enabled;
+            let changed = compact_choice_row(
+                ui,
+                self.t(Key::RowAutostart),
+                self.t(Key::HintAutostart),
+                |ui| {
+                    widgets::segmented(
+                        ui,
+                        "autostart",
+                        &mut enabled,
+                        &[(false, self.t(Key::Disabled)), (true, self.t(Key::Enabled))],
+                    )
+                },
+            );
+
+            if changed && enabled != self.autostart_enabled {
+                match crate::autostart::set_enabled(enabled) {
+                    Ok(()) => {
+                        self.autostart_enabled = enabled;
+                        self.notice = Some(
+                            self.t(if enabled {
+                                Key::AutostartOn
+                            } else {
+                                Key::AutostartOff
+                            })
+                            .to_string(),
+                        );
+                    }
+                    Err(error) => {
+                        self.notice =
+                            Some(self.fill(Key::AutostartFailed, &[format!("{error:#}")]));
+                    }
+                }
+            }
+
+            ui.add_space(3.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(self.t(Key::AutostartHint))
+                        .font(theme::sans(9.5))
+                        .color(theme::dim()),
+                )
+                .wrap(),
+            );
+        } else {
+            let _ = row_label(
+                ui,
+                self.t(Key::RowAutostart),
+                self.t(Key::HintAutostart),
+                20.0,
+            );
+            ui.add_space(3.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(self.t(Key::AutostartUnavailable))
+                        .font(theme::sans(9.5))
+                        .color(theme::warning()),
+                )
+                .wrap(),
+            );
+        }
+    }
+
+    fn target_blocked_reason(&self) -> Option<Key> {
+        if crate::backend::target_supported() {
+            return None;
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let wayland = std::env::var_os("WAYLAND_DISPLAY")
+                .is_some_and(|value| !value.is_empty())
+                || std::env::var("XDG_SESSION_TYPE")
+                    .is_ok_and(|value| value.eq_ignore_ascii_case("wayland"));
+            if wayland {
+                return Some(Key::TargetWayland);
+            }
+        }
+
+        Some(Key::TargetNoDisplay)
+    }
+
     #[cfg(windows)]
     fn draw_hotkeys_tab(&mut self, ui: &mut Ui) {
         let mut start = None;
@@ -962,24 +1287,29 @@ impl GuiApp {
         ui.horizontal(|ui| {
             let _ = row_label(
                 ui,
-                "Переключение",
-                "Глобальное включение и выключение кликов",
+                self.t(Key::RowToggleHotkey),
+                self.t(Key::HintToggleHotkey),
                 20.0,
             );
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let recording = self.recording == Some(RecordTarget::Toggle);
-                let response = hotkey_field(ui, &self.hotkey, recording);
+                let response = hotkey_field(
+                    ui,
+                    &self.hotkey,
+                    recording,
+                    self.t(Key::RecordWaiting),
+                    self.t(Key::NotSet),
+                );
                 if response.clicked() {
                     start = Some(RecordTarget::Toggle);
                 }
                 let response = if self.daemon_hotkey_active.is_empty() {
                     response
                 } else {
-                    response.on_hover_text(format!(
-                        "Сейчас зарегистрирована: {}",
-                        hotkey_label(&self.daemon_hotkey_active)
-                    ))
+                    response.on_hover_text(
+                        self.fill(Key::Registered, &[hotkey_label(&self.daemon_hotkey_active)]),
+                    )
                 };
                 let _ = response;
             });
@@ -988,23 +1318,35 @@ impl GuiApp {
         theme::rule(ui);
 
         ui.horizontal(|ui| {
-            let _ = row_label(ui, "Удержание", "Клики идут, пока клавиша зажата", 20.0);
+            let _ = row_label(
+                ui,
+                self.t(Key::RowHoldHotkey),
+                self.t(Key::HintHoldHotkey),
+                20.0,
+            );
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let recording = self.recording == Some(RecordTarget::Hold);
-                let response = hotkey_field(ui, &self.hold_hotkey, recording);
+                let response = hotkey_field(
+                    ui,
+                    &self.hold_hotkey,
+                    recording,
+                    self.t(Key::RecordWaiting),
+                    self.t(Key::NotSet),
+                );
                 if response.clicked() {
                     start = Some(RecordTarget::Hold);
                 }
                 if !self.hold_hotkey.is_empty()
-                    && widgets::text_button(ui, "ОЧИСТИТЬ", theme::dim(), theme::danger()).clicked()
+                    && widgets::text_button(ui, self.t(Key::Clear), theme::dim(), theme::danger())
+                        .clicked()
                 {
                     self.clear_hold_hotkey();
                 }
                 if !self.daemon_hold_hotkey_active.is_empty() {
-                    let _ = response.on_hover_text(format!(
-                        "Сейчас зарегистрирована: {}",
-                        hotkey_label(&self.daemon_hold_hotkey_active)
+                    let _ = response.on_hover_text(self.fill(
+                        Key::Registered,
+                        &[hotkey_label(&self.daemon_hold_hotkey_active)],
                     ));
                 }
             });
@@ -1013,27 +1355,21 @@ impl GuiApp {
         let hint = if let Some(target) = self.recording {
             (
                 theme::accent(),
-                format!(
-                    "Нажмите любую клавишу для «{}». Повторный клик по полю — отмена.",
-                    match target {
-                        RecordTarget::Toggle => "переключения",
-                        RecordTarget::Hold => "удержания",
+                self.fill(
+                    Key::RecordHint,
+                    &[match target {
+                        RecordTarget::Toggle => self.t(Key::RecordTargetToggle),
+                        RecordTarget::Hold => self.t(Key::RecordTargetHold),
                     }
+                    .to_string()],
                 ),
             )
         } else if let Some(error) = &self.daemon_hotkey_error {
             (theme::danger(), error.clone())
         } else if self.daemon_hotkey_paused {
-            (
-                theme::muted(),
-                "Регистрация горячих клавиш приостановлена.".to_string(),
-            )
+            (theme::muted(), self.t(Key::HotkeyPaused).to_string())
         } else {
-            (
-                theme::dim(),
-                "Клавиша без модификаторов тоже работает; F12 может быть занята Windows."
-                    .to_string(),
-            )
+            (theme::dim(), self.t(Key::HotkeyHint).to_string())
         };
         ui.add_space(6.0);
         ui.add(egui::Label::new(RichText::new(hint.1).font(theme::sans(9.5)).color(hint.0)).wrap());
@@ -1053,7 +1389,7 @@ impl GuiApp {
         let bind = self.toggle_bind();
 
         ui.horizontal(|ui| {
-            let _ = row_label(ui, "Глобальная", "Комбинацию задаёт композитор", 20.0);
+            let _ = row_label(ui, self.t(Key::RowGlobal), self.t(Key::HintGlobal), 20.0);
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let response = ui.add(
@@ -1066,10 +1402,10 @@ impl GuiApp {
                 );
                 let response = response
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(format!("Нажмите, чтобы скопировать bind\n{bind}"));
+                    .on_hover_text(format!("{}\n{bind}", self.t(Key::CopyBind)));
                 if response.clicked() {
                     ui.ctx().copy_text(bind.clone());
-                    self.notice = Some("Bind скопирован в буфер обмена.".to_string());
+                    self.notice = Some(self.t(Key::BindCopied).to_string());
                 }
             });
         });
@@ -1079,18 +1415,16 @@ impl GuiApp {
         ui.add_space(6.0);
         ui.add(
             egui::Label::new(
-                RichText::new(
-                    "Глобальную комбинацию задаёт композитор. Нажмите MOD+ALT+C, чтобы скопировать готовый bind для niri.",
-                )
-                .font(theme::sans(9.5))
-                .color(theme::dim()),
+                RichText::new(self.t(Key::BindHint))
+                    .font(theme::sans(9.5))
+                    .color(theme::dim()),
             )
             .wrap(),
         );
         ui.add_space(6.0);
         ui.add(
             egui::Label::new(
-                RichText::new("Удержание доступно только в Windows.")
+                RichText::new(self.t(Key::HoldWindowsOnly))
                     .font(theme::sans(9.5))
                     .color(theme::dim()),
             )
@@ -1126,11 +1460,11 @@ impl GuiApp {
             );
 
             let response = ui.label(
-                RichText::new(if self.online {
-                    "ДЕМОН РАБОТАЕТ"
+                RichText::new(self.t(if self.online {
+                    Key::DaemonRunning
                 } else {
-                    "ДЕМОН НЕ ЗАПУЩЕН"
-                })
+                    Key::DaemonStopped
+                }))
                 .font(theme::mono(8.5))
                 .color(theme::muted()),
             );
@@ -1147,8 +1481,13 @@ impl GuiApp {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_enabled_ui(self.online, |ui| {
-                    if widgets::text_button(ui, "ЗАВЕРШИТЬ ДЕМОН", theme::muted(), theme::danger())
-                        .clicked()
+                    if widgets::text_button(
+                        ui,
+                        self.t(Key::QuitDaemon),
+                        theme::muted(),
+                        theme::danger(),
+                    )
+                    .clicked()
                     {
                         quit_clicked = true;
                     }
@@ -1183,20 +1522,20 @@ impl GuiApp {
             .show(ctx, |ui| {
                 ui.set_width(360.0);
                 ui.label(
-                    RichText::new("ЗАВЕРШЕНИЕ РАБОТЫ")
+                    RichText::new(self.t(Key::QuitTitle))
                         .font(theme::mono_medium(8.5))
                         .color(theme::dim()),
                 );
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new("Завершить демон?")
+                    RichText::new(self.t(Key::QuitQuestion))
                         .font(theme::sans_semibold(22.0))
                         .color(theme::text()),
                 );
                 ui.add_space(8.0);
                 ui.add(
                     egui::Label::new(
-                        RichText::new("Клики будут остановлены, демон завершит работу.")
+                        RichText::new(self.t(Key::QuitText))
                             .font(theme::sans(12.0))
                             .color(theme::muted()),
                     )
@@ -1205,13 +1544,23 @@ impl GuiApp {
                 ui.add_space(20.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if widgets::solid_button(ui, "ЗАВЕРШИТЬ", theme::danger(), theme::panel())
-                            .clicked()
+                        if widgets::solid_button(
+                            ui,
+                            self.t(Key::QuitConfirm),
+                            theme::danger(),
+                            theme::panel(),
+                        )
+                        .clicked()
                         {
                             quit = true;
                         }
-                        if widgets::text_button(ui, "ОТМЕНА", theme::muted(), theme::text())
-                            .clicked()
+                        if widgets::text_button(
+                            ui,
+                            self.t(Key::Cancel),
+                            theme::muted(),
+                            theme::text(),
+                        )
+                        .clicked()
                         {
                             close = true;
                         }
@@ -1234,6 +1583,12 @@ impl GuiApp {
 
 impl egui_software_backend::App for GuiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _backend: &mut SoftwareBackend) {
+        if ui.ctx().input(|input| input.viewport().close_requested()) {
+            // Persist the draft even if the window is closed before the next
+            // debounce tick has a chance to save it.
+            self.save_config();
+        }
+
         self.capture_hotkey(ui.ctx());
         self.drain_events(ui.ctx());
         self.maybe_apply_settings();
@@ -1280,7 +1635,9 @@ impl egui_software_backend::App for GuiApp {
                         Layout::top_down(Align::LEFT),
                         |ui| match self.tab {
                             Tab::Clicks => self.draw_clicks_tab(ui),
+                            Tab::Mode => self.draw_mode_tab(ui),
                             Tab::Hotkeys => self.draw_hotkeys_tab(ui),
+                            Tab::System => self.draw_system_tab(ui),
                         },
                     );
                 });
@@ -1311,16 +1668,39 @@ impl Drop for GuiApp {
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let config = SoftwareBackendAppConfiguration::new().viewport_builder(
-        egui::ViewportBuilder::default()
-            .with_app_id("autoclicker")
-            .with_inner_size(WINDOW_SIZE)
-            .with_min_inner_size(MIN_WINDOW_SIZE)
-            .with_title("Autoclicker"),
-    );
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id("autoclicker")
+        .with_inner_size(WINDOW_SIZE)
+        .with_min_inner_size(MIN_WINDOW_SIZE)
+        .with_title("Autoclicker");
+
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
+    let config = SoftwareBackendAppConfiguration::new().viewport_builder(viewport);
 
     egui_software_backend::run_app_with_software_backend(config, GuiApp::new)
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+}
+
+fn load_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!("../../assets/icon/autoclicker-256.png");
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    buffer.truncate(info.buffer_size());
+
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+
+    Some(egui::IconData {
+        rgba: buffer,
+        width: info.width,
+        height: info.height,
+    })
 }
 
 fn row_label(ui: &mut Ui, title: &str, hint: &str, height: f32) -> egui::Response {
@@ -1356,7 +1736,7 @@ fn compact_slider_row(
         ui.spacing_mut().item_spacing.x = 6.0;
         let _ = row_label(ui, title, hint, 18.0);
 
-        let field_width = 82.0;
+        let field_width = widgets::numeric_row_width(ui, &spec.range, spec.decimals, spec.suffix);
         let slider_width = (ui.available_width() - field_width).max(60.0);
         ui.allocate_ui_with_layout(
             Vec2::new(slider_width, 18.0),
@@ -1434,12 +1814,18 @@ fn compact_choice_row(
 }
 
 #[cfg(windows)]
-fn hotkey_field(ui: &mut Ui, combo: &str, recording: bool) -> egui::Response {
+fn hotkey_field(
+    ui: &mut Ui,
+    combo: &str,
+    recording: bool,
+    waiting: &str,
+    empty: &str,
+) -> egui::Response {
     let width = ui.available_width().clamp(120.0, 190.0);
     let label = if recording {
-        "ЖДЁМ КЛАВИШУ".to_string()
+        waiting.to_string()
     } else if combo.is_empty() {
-        "НЕ ЗАДАНА".to_string()
+        empty.to_string()
     } else {
         hotkey_label(combo)
     };
@@ -1531,6 +1917,8 @@ fn group_digits(value: u64) -> String {
 fn settings_equivalent(left: &Settings, right: &Settings) -> bool {
     left.button == right.button
         && left.limit == right.limit
+        && left.multi_click == right.multi_click
+        && left.target == right.target
         && (left.cps - right.cps).abs() < 0.001
         && (left.hold_ms() - right.hold_ms()).abs() < 0.001
         && (left.jitter_pct - right.jitter_pct).abs() < 0.001

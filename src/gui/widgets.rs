@@ -287,6 +287,50 @@ fn paint_field_background(ui: &Ui, rect: Rect, hovered: bool) {
     }
 }
 
+fn field_text_width(ui: &Ui, text: String) -> f32 {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text, theme::mono_medium(12.0), theme::text());
+    (galley.size().x + 16.0).max(54.0)
+}
+
+fn suffix_width(ui: &Ui, suffix: &str) -> f32 {
+    ui.painter()
+        .layout_no_wrap(suffix.to_owned(), theme::mono_medium(8.0), theme::dim())
+        .size()
+        .x
+}
+
+/// Total width of a numeric field plus its unit label, so the slider row can
+/// reserve enough space for the largest value without clipping digits.
+pub fn numeric_row_width(
+    ui: &Ui,
+    range: &std::ops::RangeInclusive<f64>,
+    decimals: usize,
+    suffix: &str,
+) -> f32 {
+    field_text_width(ui, format!("{:.*}", decimals, range.end())) + suffix_width(ui, suffix) + 5.0
+}
+
+fn configure_field_child(ui: &mut Ui, rect: Rect, inner_width: f32) -> Ui {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    child.style_mut().override_text_style = Some(TextStyle::Monospace);
+    child.style_mut().override_font_id = Some(theme::mono_medium(12.0));
+    child.spacing_mut().interact_size = Vec2::new(inner_width, 18.0);
+    child.visuals_mut().extreme_bg_color = theme::panel();
+    child.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    child.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
+    child.visuals_mut().widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
+    child.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
+    child.visuals_mut().widgets.active.weak_bg_fill = theme::alpha(theme::accent(), 14);
+    child.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
+    child
+}
+
 pub fn numeric_field(
     ui: &mut Ui,
     value: &mut f64,
@@ -302,29 +346,15 @@ pub fn numeric_field(
             .color(theme::dim()),
     );
 
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(54.0, 18.0), Sense::hover());
+    let width = field_text_width(ui, format!("{:.*}", decimals, range.end()));
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
     let hovered = ui.rect_contains_pointer(rect);
     paint_field_background(ui, rect, hovered);
 
-    let mut child = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(Layout::right_to_left(Align::Center)),
-    );
-    child.style_mut().override_text_style = Some(TextStyle::Monospace);
-    child.style_mut().override_font_id = Some(theme::mono_medium(12.0));
-    child.spacing_mut().interact_size = Vec2::new(46.0, 18.0);
-    child.visuals_mut().extreme_bg_color = theme::panel();
-    child.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-    child.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
-    child.visuals_mut().widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
-    child.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
-    child.visuals_mut().widgets.active.weak_bg_fill = theme::alpha(theme::accent(), 14);
-    child.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
-
+    let mut child = configure_field_child(ui, rect, width - 4.0);
     child
         .add_sized(
-            Vec2::new(46.0, 18.0),
+            Vec2::new(width - 4.0, 18.0),
             egui::DragValue::new(value)
                 .range(range)
                 .speed(speed)
@@ -347,29 +377,15 @@ pub fn integer_field(
             .color(theme::dim()),
     );
 
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(54.0, 18.0), Sense::hover());
+    let width = field_text_width(ui, range.end().to_string());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
     let hovered = ui.rect_contains_pointer(rect);
     paint_field_background(ui, rect, hovered);
 
-    let mut child = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(Layout::right_to_left(Align::Center)),
-    );
-    child.style_mut().override_text_style = Some(TextStyle::Monospace);
-    child.style_mut().override_font_id = Some(theme::mono_medium(12.0));
-    child.spacing_mut().interact_size = Vec2::new(46.0, 18.0);
-    child.visuals_mut().extreme_bg_color = theme::panel();
-    child.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-    child.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
-    child.visuals_mut().widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
-    child.visuals_mut().widgets.hovered.bg_stroke = Stroke::NONE;
-    child.visuals_mut().widgets.active.weak_bg_fill = theme::alpha(theme::accent(), 14);
-    child.visuals_mut().widgets.active.bg_stroke = Stroke::NONE;
-
+    let mut child = configure_field_child(ui, rect, width - 4.0);
     child
         .add_sized(
-            Vec2::new(46.0, 18.0),
+            Vec2::new(width - 4.0, 18.0),
             egui::DragValue::new(value)
                 .range(range)
                 .speed(speed)
@@ -378,12 +394,33 @@ pub fn integer_field(
         .changed()
 }
 
-pub fn theme_toggle(ui: &mut Ui, dark: bool) -> Response {
-    let label = if dark {
-        "СВЕТЛАЯ"
-    } else {
-        "ТЁМНАЯ"
-    };
+/// Signed whole-number field used by the fixed-point coordinates.
+pub fn coordinate_field(ui: &mut Ui, value: &mut i32, suffix: &str) -> bool {
+    ui.spacing_mut().item_spacing.x = 4.0;
+    ui.label(
+        RichText::new(suffix)
+            .font(theme::mono_medium(8.0))
+            .color(theme::dim()),
+    );
+
+    let sample =
+        ui.painter()
+            .layout_no_wrap("-99999".to_owned(), theme::mono_medium(12.0), theme::text());
+    let width = (sample.size().x + 16.0).max(54.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
+    let hovered = ui.rect_contains_pointer(rect);
+    paint_field_background(ui, rect, hovered);
+
+    let mut child = configure_field_child(ui, rect, width - 4.0);
+    child
+        .add_sized(
+            Vec2::new(width - 4.0, 18.0),
+            egui::DragValue::new(value).speed(1.0).max_decimals(0),
+        )
+        .changed()
+}
+
+pub fn theme_toggle(ui: &mut Ui, dark: bool, label: &str) -> Response {
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_owned(), theme::mono_medium(8.5), theme::text());

@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use egui;
 
+use crate::i18n::{self, Key, Lang, Language};
 use crate::ipc;
 use crate::state::{Settings, Status};
 
@@ -16,6 +17,7 @@ pub enum Command {
     Apply(Settings),
     SetHotkey(String),
     SetHoldHotkey(String),
+    SetLanguage(Language),
     #[cfg(windows)]
     PauseHotkey,
     #[cfg(windows)]
@@ -50,16 +52,23 @@ struct Session {
     last_status: Option<Status>,
     hotkey: String,
     hold_hotkey: String,
+    lang: Lang,
 }
 
 impl Worker {
-    pub fn spawn(ctx: egui::Context, hotkey: String, hold_hotkey: String) -> std::io::Result<Self> {
+    pub fn spawn(
+        ctx: egui::Context,
+        hotkey: String,
+        hold_hotkey: String,
+        language: Language,
+    ) -> std::io::Result<Self> {
         let (command_tx, command_rx) = channel();
         let (event_tx, event_rx) = channel();
+        let lang = language.resolve();
 
         thread::Builder::new()
             .name("autoclicker-gui-ipc".to_string())
-            .spawn(move || run(command_rx, event_tx, ctx, hotkey, hold_hotkey))?;
+            .spawn(move || run(command_rx, event_tx, ctx, hotkey, hold_hotkey, lang))?;
 
         Ok(Self {
             commands: command_tx,
@@ -74,6 +83,7 @@ fn run(
     ctx: egui::Context,
     hotkey: String,
     hold_hotkey: String,
+    lang: Lang,
 ) {
     let mut session = Session {
         online: false,
@@ -81,6 +91,7 @@ fn run(
         last_status: None,
         hotkey,
         hold_hotkey,
+        lang,
     };
     let mut next_poll = Instant::now();
 
@@ -138,7 +149,7 @@ fn handle_command(
                         send_error(
                             events,
                             ctx,
-                            format!("Не удалось запустить клики: {error:#}"),
+                            message(session.lang, Key::WorkerStartClicks, format!("{error:#}")),
                         );
                     } else {
                         session.online = true;
@@ -148,7 +159,7 @@ fn handle_command(
                 Err(error) => send_error(
                     events,
                     ctx,
-                    format!("Не удалось запустить демон: {error:#}"),
+                    message(session.lang, Key::WorkerStartDaemon, format!("{error:#}")),
                 ),
             }
         }
@@ -165,7 +176,7 @@ fn handle_command(
                     send_error(
                         events,
                         ctx,
-                        format!("Не удалось остановить клики: {error:#}"),
+                        message(session.lang, Key::WorkerStopClicks, format!("{error:#}")),
                     );
                 }
             }
@@ -184,7 +195,7 @@ fn handle_command(
                         send_error(
                             events,
                             ctx,
-                            format!("Не удалось применить настройки: {error:#}"),
+                            message(session.lang, Key::WorkerApply, format!("{error:#}")),
                         );
                     }
                 }
@@ -205,7 +216,7 @@ fn handle_command(
                         send_error(
                             events,
                             ctx,
-                            format!("Не удалось применить горячую клавишу: {error:#}"),
+                            message(session.lang, Key::WorkerHotkey, format!("{error:#}")),
                         );
                     }
                 }
@@ -230,11 +241,14 @@ fn handle_command(
                         send_error(
                             events,
                             ctx,
-                            format!("Не удалось применить клавишу удержания: {error:#}"),
+                            message(session.lang, Key::WorkerHoldHotkey, format!("{error:#}")),
                         );
                     }
                 }
             }
+        }
+        Command::SetLanguage(language) => {
+            session.lang = language.resolve();
         }
         #[cfg(windows)]
         Command::PauseHotkey => {
@@ -247,7 +261,7 @@ fn handle_command(
                     Err(error) => send_error(
                         events,
                         ctx,
-                        format!("Не удалось приостановить горячую клавишу: {error:#}"),
+                        message(session.lang, Key::WorkerPauseHotkey, format!("{error:#}")),
                     ),
                 }
             }
@@ -263,7 +277,7 @@ fn handle_command(
                     Err(error) => send_error(
                         events,
                         ctx,
-                        format!("Не удалось восстановить горячую клавишу: {error:#}"),
+                        message(session.lang, Key::WorkerResumeHotkey, format!("{error:#}")),
                     ),
                 }
             }
@@ -292,7 +306,7 @@ fn handle_command(
                 send_error(
                     events,
                     ctx,
-                    "Не удалось остановить старый демон для обновления протокола.".to_string(),
+                    i18n::tr(session.lang, Key::WorkerStopOldDaemon).to_string(),
                 );
                 return;
             }
@@ -307,7 +321,7 @@ fn handle_command(
                         send_error(
                             events,
                             ctx,
-                            format!("Не удалось перезапустить демон: {error:#}"),
+                            message(session.lang, Key::WorkerRestartDaemon, format!("{error:#}")),
                         );
                         return;
                     }
@@ -320,7 +334,11 @@ fn handle_command(
                             send_error(
                                 events,
                                 ctx,
-                                format!("Демон перезапущен, но клики не возобновлены: {error:#}"),
+                                message(
+                                    session.lang,
+                                    Key::WorkerResumeFailed,
+                                    format!("{error:#}"),
+                                ),
                             );
                         }
                     }
@@ -331,7 +349,7 @@ fn handle_command(
                 Err(error) => send_error(
                     events,
                     ctx,
-                    format!("Не удалось перезапустить демон: {error:#}"),
+                    message(session.lang, Key::WorkerRestartDaemon, format!("{error:#}")),
                 ),
             }
         }
@@ -351,7 +369,7 @@ fn handle_command(
                     send_error(
                         events,
                         ctx,
-                        format!("Не удалось завершить демон: {error:#}"),
+                        message(session.lang, Key::WorkerQuitFailed, format!("{error:#}")),
                     );
                 }
             }
@@ -378,7 +396,11 @@ fn poll(events: &Sender<Event>, ctx: &egui::Context, session: &mut Session) {
                 }
             }
             Err(error) => {
-                send_error(events, ctx, format!("Некорректный ответ демона: {error:#}"));
+                send_error(
+                    events,
+                    ctx,
+                    message(session.lang, Key::WorkerBadResponse, format!("{error:#}")),
+                );
             }
         },
         Err(error) => {
@@ -399,6 +421,13 @@ fn send_error(events: &Sender<Event>, ctx: &egui::Context, message: String) {
     ctx.request_repaint();
 }
 
+fn message(lang: Lang, key: Key, detail: impl std::fmt::Display) -> String {
+    let detail = detail.to_string();
+    i18n::tr(lang, key)
+        .replace("{:#}", &detail)
+        .replace("{}", &detail)
+}
+
 #[cfg(windows)]
 fn ensure_daemon(events: &Sender<Event>, ctx: &egui::Context, session: &mut Session) {
     match ipc::send_or_spawn_with_hotkeys(
@@ -414,13 +443,13 @@ fn ensure_daemon(events: &Sender<Event>, ctx: &egui::Context, session: &mut Sess
             Err(error) => send_error(
                 events,
                 ctx,
-                format!("Не удалось запустить демон: {error:#}"),
+                message(session.lang, Key::WorkerStartDaemon, format!("{error:#}")),
             ),
         },
         Err(error) => send_error(
             events,
             ctx,
-            format!("Не удалось запустить демон: {error:#}"),
+            message(session.lang, Key::WorkerStartDaemon, format!("{error:#}")),
         ),
     }
 }
