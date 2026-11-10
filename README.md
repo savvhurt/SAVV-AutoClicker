@@ -1,4 +1,4 @@
-# autoclicker
+# SAVV-Autoclicker
 
 A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
 **Windows**. Clicks are injected at the operating-system level:
