@@ -1,4 +1,5 @@
 use std::sync::mpsc::{Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use egui::{
@@ -11,7 +12,6 @@ use super::worker::{Command, Event, Worker};
 use super::{theme, widgets};
 
 use crate::i18n::{self, Key, Lang, Language};
-use crate::ipc;
 use crate::state::{Button, MAX_DELAY_MS, MAX_LIMIT, Point, Settings, Status, StopReason};
 
 const APPLY_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -126,6 +126,7 @@ pub struct GuiApp {
     confirm_quit: bool,
     commands: Sender<Command>,
     events: Receiver<Event>,
+    worker: Option<thread::JoinHandle<()>>,
 }
 
 impl GuiApp {
@@ -183,6 +184,7 @@ impl GuiApp {
             confirm_quit: false,
             commands: worker.commands,
             events: worker.events,
+            worker: worker.handle,
         }
     }
 
@@ -1268,11 +1270,7 @@ impl GuiApp {
 
         #[cfg(target_os = "linux")]
         {
-            let wayland = std::env::var_os("WAYLAND_DISPLAY")
-                .is_some_and(|value| !value.is_empty())
-                || std::env::var("XDG_SESSION_TYPE")
-                    .is_ok_and(|value| value.eq_ignore_ascii_case("wayland"));
-            if wayland {
+            if crate::backend::linux::is_wayland() {
                 return Some(Key::TargetWayland);
             }
         }
@@ -1658,11 +1656,13 @@ impl egui_software_backend::App for GuiApp {
 
 impl Drop for GuiApp {
     fn drop(&mut self) {
-        let _ = ipc::send("HOTKEY_RESUME");
-        let _ = ipc::send("OFF");
-        #[cfg(windows)]
-        let _ = ipc::send("QUIT");
+        // The worker owns the daemon cleanup (resume, OFF and, on Windows,
+        // QUIT). Join it so the process does not exit before that best-effort
+        // IPC completes.
         let _ = self.commands.send(Command::Shutdown);
+        if let Some(handle) = self.worker.take() {
+            let _ = handle.join();
+        }
         self.save_config();
     }
 }

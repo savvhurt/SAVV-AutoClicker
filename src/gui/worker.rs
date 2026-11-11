@@ -44,6 +44,7 @@ pub enum Event {
 pub struct Worker {
     pub commands: Sender<Command>,
     pub events: Receiver<Event>,
+    pub handle: Option<thread::JoinHandle<()>>,
 }
 
 struct Session {
@@ -66,13 +67,14 @@ impl Worker {
         let (event_tx, event_rx) = channel();
         let lang = language.resolve();
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("autoclicker-gui-ipc".to_string())
             .spawn(move || run(command_rx, event_tx, ctx, hotkey, hold_hotkey, lang))?;
 
         Ok(Self {
             commands: command_tx,
             events: event_rx,
+            handle: Some(handle),
         })
     }
 }

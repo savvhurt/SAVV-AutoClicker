@@ -1,7 +1,7 @@
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -100,6 +100,7 @@ static HOTKEY_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static HOTKEY_REQUEST_LOCK: Mutex<()> = Mutex::new(());
 static HOTKEY_RESPONSE: Mutex<Option<Sender<std::result::Result<(), String>>>> = Mutex::new(None);
 static HOLD_TARGET: Mutex<Option<Hotkey>> = Mutex::new(None);
+static HOLD_SIGNAL: Condvar = Condvar::new();
 
 #[derive(Clone)]
 struct Registration {
@@ -169,29 +170,9 @@ pub(crate) fn spawn_hotkey(
             // state on a dedicated thread so a release always stops the hold
             // session, even when the hotkey message queue is busy.
             let watcher_shared = shared.clone();
-            if let Err(error) =
-                thread::Builder::new()
-                    .name("hold-watcher".into())
-                    .spawn(move || {
-                        loop {
-                            thread::sleep(HOLD_POLL);
-
-                            let target = HOLD_TARGET.lock().unwrap().clone();
-                            let Some(hold) = target else {
-                                continue;
-                            };
-
-                            if !watcher_shared.status().hold_active {
-                                *HOLD_TARGET.lock().unwrap() = None;
-                                continue;
-                            }
-
-                            if !hold.is_down() {
-                                watcher_shared.hold_release();
-                                *HOLD_TARGET.lock().unwrap() = None;
-                            }
-                        }
-                    })
+            if let Err(error) = thread::Builder::new()
+                .name("hold-watcher".into())
+                .spawn(move || watch_hold(watcher_shared))
             {
                 shared
                     .set_hotkey_error(format!("failed to start the hold watcher thread: {error}"));
@@ -302,10 +283,10 @@ fn handle_hotkey_press(shared: &SharedState, registry: &Registry, id: i32) {
     if registry.toggle.as_ref().is_some_and(|item| item.id == id) {
         shared.toggle();
     } else if let Some(hold) = registry.hold.as_ref().filter(|item| item.id == id) {
-        if shared.hold_press() || shared.status().hold_active {
+        if shared.hold_press() || shared.hold_active() {
             // Arm the watcher again on a repeated key-down. The watcher polls
             // the physical key state, so the hold cannot turn into a toggle.
-            *HOLD_TARGET.lock().unwrap() = Some(hold.hotkey.clone());
+            arm_hold_target(hold.hotkey.clone());
         }
     }
 }
@@ -558,9 +539,59 @@ fn handle_resume(shared: &SharedState, registry: &mut Registry, reply: bool) {
 }
 
 fn stop_hold_session(shared: &SharedState) {
-    *HOLD_TARGET.lock().unwrap() = None;
-    if shared.status().hold_active {
+    clear_hold_target();
+    if shared.hold_active() {
         shared.hold_release();
+    }
+}
+
+fn arm_hold_target(hotkey: Hotkey) {
+    *HOLD_TARGET.lock().unwrap() = Some(hotkey);
+    HOLD_SIGNAL.notify_all();
+}
+
+fn clear_hold_target() {
+    HOLD_TARGET.lock().unwrap().take();
+    HOLD_SIGNAL.notify_all();
+}
+
+/// Block until a hold hotkey is armed, then poll the physical key state until
+/// it is released. The thread sleeps while no hold key is held, so an idle
+/// daemon no longer wakes up every few milliseconds.
+fn watch_hold(shared: Arc<SharedState>) {
+    loop {
+        let hold = {
+            let mut target = HOLD_TARGET.lock().unwrap();
+            loop {
+                if let Some(hold) = target.as_ref() {
+                    break hold.clone();
+                }
+                target = HOLD_SIGNAL.wait(target).unwrap();
+            }
+        };
+
+        loop {
+            thread::sleep(HOLD_POLL);
+
+            if !shared.hold_active() {
+                clear_hold_target();
+                break;
+            }
+            if !hold.is_down() {
+                clear_hold_target();
+                shared.hold_release();
+                break;
+            }
+
+            let replaced = HOLD_TARGET
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(|current| current != &hold);
+            if replaced {
+                break;
+            }
+        }
     }
 }
 

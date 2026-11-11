@@ -10,18 +10,12 @@ use fs2::FileExt;
 pub struct TimerResolution;
 
 impl TimerResolution {
-    pub fn new() -> Self {
+    fn new() -> Self {
         #[cfg(windows)]
         unsafe {
             windows::Win32::Media::timeBeginPeriod(1);
         }
         Self
-    }
-}
-
-impl Default for TimerResolution {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

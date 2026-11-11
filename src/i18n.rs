@@ -34,7 +34,7 @@ impl Language {
     ];
 
     pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
+        match value.trim().to_lowercase().as_str() {
             "" | "auto" | "automatic" | "системный" => Some(Self::Auto),
             "en" | "eng" | "english" | "английский" => Some(Self::En),
             "ru" | "rus" | "russian" | "русский" => Some(Self::Ru),

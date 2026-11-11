@@ -152,21 +152,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
     fs::write(&temporary, bytes)
         .with_context(|| format!("failed to write {}", temporary.display()))?;
-    match fs::rename(&temporary, path) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            // Windows-like rename semantics are not needed on Linux, but a
-            // stale file from another process should not block the update.
-            if path.exists() {
-                let _ = fs::remove_file(path);
-                if fs::rename(&temporary, path).is_ok() {
-                    return Ok(());
-                }
-            }
-            let _ = fs::remove_file(&temporary);
-            Err(error).with_context(|| format!("failed to replace {}", path.display()))
-        }
-    }
+    fs::rename(&temporary, path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        anyhow::anyhow!("failed to replace {}: {error}", path.display())
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -179,6 +168,12 @@ fn desktop_quote(path: &Path) -> String {
             '\\' | '"' | '`' | '$' => {
                 quoted.push('\\');
                 quoted.push(character);
+            }
+            '%' => {
+                // Field codes in the Exec key start with `%`; a literal
+                // percent sign has to be written as `%%`.
+                quoted.push('%');
+                quoted.push('%');
             }
             _ => quoted.push(character),
         }
@@ -195,7 +190,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn desktop_quoting_escapes_special_characters() {
-        let quoted = desktop_quote(Path::new("/opt/my app/$bin\"x"));
-        assert_eq!(quoted, "\"/opt/my app/\\$bin\\\"x\"");
+        let quoted = desktop_quote(Path::new("/opt/my app/$bin\"x%y"));
+        assert_eq!(quoted, "\"/opt/my app/\\$bin\\\"x%%y\"");
     }
 }

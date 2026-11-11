@@ -15,6 +15,9 @@ use interprocess::local_socket::{
 use crate::platform;
 use crate::state::{Button, Point, Settings, SharedState};
 
+const IO_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_COMMAND_BYTES: u64 = 4096;
+
 #[cfg(unix)]
 fn socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
     platform::socket_path()?.to_fs_name::<GenericFilePath>()
@@ -53,6 +56,11 @@ pub fn connect() -> io::Result<Stream> {
 
 pub fn send(command: &str) -> Result<String> {
     let mut stream = connect().context("failed to connect to the autoclicker daemon")?;
+    // Unix-domain sockets support timeouts; named pipes currently ignore
+    // them, but keeping the call best-effort still protects the common path
+    // from a wedged daemon.
+    let _ = stream.set_recv_timeout(Some(IO_TIMEOUT));
+    let _ = stream.set_send_timeout(Some(IO_TIMEOUT));
     writeln!(stream, "{command}").context("failed to send a command to the daemon")?;
     stream
         .flush()
@@ -152,13 +160,16 @@ pub fn serve(listener: Listener, shared: Arc<SharedState>) {
 }
 
 fn handle(mut stream: Stream, shared: &SharedState) -> Result<()> {
+    let _ = stream.set_recv_timeout(Some(IO_TIMEOUT));
+    let _ = stream.set_send_timeout(Some(IO_TIMEOUT));
+
     let mut line = String::new();
     {
-        let mut reader = BufReader::new(&mut stream);
+        let mut reader = BufReader::new(&mut stream).take(MAX_COMMAND_BYTES + 1);
         reader.read_line(&mut line)?;
     }
 
-    if line.len() > 4096 {
+    if line.len() as u64 > MAX_COMMAND_BYTES {
         stream.write_all(b"ERR command is too long\n")?;
         stream.flush()?;
         return Ok(());

@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use anyhow::Result;
 
 use crate::state::{Button, Point};
@@ -19,20 +21,25 @@ pub trait Backend: Send {
 }
 
 pub fn target_supported() -> bool {
-    #[cfg(windows)]
-    {
-        true
-    }
+    // The display server and environment do not change while the process is
+    // running, so probe them once instead of on every click or repaint.
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(platform_target_supported)
+}
 
-    #[cfg(target_os = "linux")]
-    {
-        linux::target_supported()
-    }
+#[cfg(windows)]
+fn platform_target_supported() -> bool {
+    true
+}
 
-    #[cfg(not(any(target_os = "linux", windows)))]
-    {
-        false
-    }
+#[cfg(target_os = "linux")]
+fn platform_target_supported() -> bool {
+    linux::target_supported()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn platform_target_supported() -> bool {
+    false
 }
 
 pub fn cursor_position() -> Result<Point> {

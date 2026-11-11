@@ -11,6 +11,8 @@ pub const MAX_LIMIT: u64 = 1_000_000_000;
 pub const MAX_DELAY_MS: f64 = 10_000.0;
 pub const MAX_MULTI_CLICK: u8 = 3;
 
+const CPS_WINDOW: Duration = Duration::from_secs(1);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
     Left,
@@ -657,6 +659,10 @@ impl SharedState {
         self.inner.lock().unwrap().quit
     }
 
+    pub fn hold_active(&self) -> bool {
+        self.inner.lock().unwrap().hold_active
+    }
+
     pub fn wait_for_quit(&self) {
         let mut inner = self.inner.lock().unwrap();
         while !inner.quit {
@@ -672,7 +678,21 @@ impl SharedState {
     }
 
     pub fn should_stop(&self, version: u64) -> bool {
+        Self::stopped_locked(&self.inner.lock().unwrap(), version)
+    }
+
+    /// Block until the session stops or `timeout` elapses. Returns `true` when
+    /// the session is no longer the one identified by `version`.
+    pub fn wait_for_stop(&self, version: u64, timeout: Duration) -> bool {
         let inner = self.inner.lock().unwrap();
+        if Self::stopped_locked(&inner, version) {
+            return true;
+        }
+        let (inner, _) = self.changed.wait_timeout(inner, timeout).unwrap();
+        Self::stopped_locked(&inner, version)
+    }
+
+    fn stopped_locked(inner: &Inner, version: u64) -> bool {
         !inner.enabled || inner.quit || inner.version != version
     }
 
@@ -709,7 +729,7 @@ impl SharedState {
         inner.click_times.push_back(now);
 
         while let Some(front) = inner.click_times.front() {
-            if now.saturating_duration_since(*front) > Duration::from_secs(1) {
+            if now.saturating_duration_since(*front) > CPS_WINDOW {
                 inner.click_times.pop_front();
             } else {
                 break;
@@ -811,10 +831,6 @@ impl SharedState {
         self.inner.lock().unwrap().hotkey_error = Some(message.into());
     }
 
-    pub fn clear_hotkey_error(&self) {
-        self.inner.lock().unwrap().hotkey_error = None;
-    }
-
     pub fn total_clicks(&self) -> u64 {
         self.inner.lock().unwrap().clicks
     }
@@ -824,7 +840,7 @@ impl SharedState {
         let mut inner = self.inner.lock().unwrap();
 
         while let Some(front) = inner.click_times.front() {
-            if now.saturating_duration_since(*front) > Duration::from_secs(1) {
+            if now.saturating_duration_since(*front) > CPS_WINDOW {
                 inner.click_times.pop_front();
             } else {
                 break;

@@ -78,7 +78,6 @@ pub fn panel() -> Color32 {
     if dark() { DARK_PANEL } else { LIGHT_PANEL }
 }
 
-#[allow(dead_code)]
 pub fn input() -> Color32 {
     if dark() { DARK_INPUT } else { LIGHT_INPUT }
 }

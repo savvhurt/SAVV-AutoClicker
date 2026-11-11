@@ -16,6 +16,7 @@ pub struct LinuxBackend {
     device: VirtualDevice,
     x11: Option<X11>,
     x11_attempted: bool,
+    target_supported: bool,
 }
 
 struct X11 {
@@ -76,6 +77,7 @@ impl LinuxBackend {
             device,
             x11: None,
             x11_attempted: false,
+            target_supported: target_supported(),
         })
     }
 
@@ -124,7 +126,7 @@ impl super::Backend for LinuxBackend {
     }
 
     fn supports_target(&self) -> bool {
-        target_supported()
+        self.target_supported
     }
 }
 
@@ -143,7 +145,7 @@ pub fn cursor_position() -> Result<Point> {
     Ok(Point::new(reply.root_x as i32, reply.root_y as i32))
 }
 
-fn is_wayland() -> bool {
+pub fn is_wayland() -> bool {
     if env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty()) {
         return true;
     }

@@ -118,11 +118,15 @@ pub fn segmented<T: Copy + PartialEq>(
     selected: &mut T,
     options: &[(T, &str)],
 ) -> bool {
+    if options.is_empty() {
+        return false;
+    }
+
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
     let response = ui
         .interact(rect, ui.make_persistent_id(id_salt), Sense::click())
         .on_hover_cursor(CursorIcon::PointingHand);
-    let count = options.len().max(1);
+    let count = options.len();
     let segment_width = rect.width() / count as f32;
 
     let pointer = ui.ctx().pointer_hover_pos();

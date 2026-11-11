@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::backend::Backend;
@@ -165,11 +164,9 @@ fn sleep_until(deadline: Instant, shared: &SharedState, version: u64) -> bool {
 
         let remaining = deadline - now;
         if remaining > SPIN_MARGIN {
-            let sleep_for = (remaining - SPIN_MARGIN).min(MAX_SLEEP_SLICE);
-            if sleep_for >= Duration::from_micros(50) {
-                thread::sleep(sleep_for);
-            } else {
-                std::hint::spin_loop();
+            let wait = (remaining - SPIN_MARGIN).min(MAX_SLEEP_SLICE);
+            if shared.wait_for_stop(version, wait) {
+                return false;
             }
         } else {
             std::hint::spin_loop();
@@ -207,6 +204,7 @@ impl Rng {
 mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
 
     use super::*;
     use crate::state::{Button, Point};
