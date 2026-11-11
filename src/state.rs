@@ -6,10 +6,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 pub const MAX_LIMIT: u64 = 1_000_000_000;
 pub const MAX_DELAY_MS: f64 = 10_000.0;
 pub const MAX_MULTI_CLICK: u8 = 3;
+pub const MAX_POINTS: usize = 16;
+pub const MAX_POINT_INTERVAL_MS: u32 = 60_000;
+pub const DEFAULT_POINT_INTERVAL_MS: u32 = 100;
 
 const CPS_WINDOW: Duration = Duration::from_secs(1);
 
@@ -46,6 +49,38 @@ impl FromStr for Button {
             "middle" => Ok(Self::Middle),
             _ => bail!("unknown button `{value}` (expected left, right or middle)"),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClickMode {
+    Cursor,
+    Point,
+    Sequence,
+}
+
+impl ClickMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cursor => "cursor",
+            Self::Point => "point",
+            Self::Sequence => "sequence",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cursor" => Some(Self::Cursor),
+            "point" => Some(Self::Point),
+            "sequence" | "points" | "multi-point" => Some(Self::Sequence),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ClickMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -102,7 +137,10 @@ pub struct Settings {
     pub limit: u64,
     pub delay: Duration,
     pub multi_click: u8,
+    pub mode: ClickMode,
     pub target: Option<Point>,
+    pub points: [Option<Point>; MAX_POINTS],
+    pub point_interval: Duration,
 }
 
 impl Default for Settings {
@@ -115,7 +153,10 @@ impl Default for Settings {
             limit: 0,
             delay: Duration::ZERO,
             multi_click: 1,
+            mode: ClickMode::Cursor,
             target: None,
+            points: [None; MAX_POINTS],
+            point_interval: Duration::from_millis(DEFAULT_POINT_INTERVAL_MS as u64),
         }
     }
 }
@@ -140,7 +181,7 @@ impl Settings {
             limit: 0,
             delay: Duration::ZERO,
             multi_click: 1,
-            target: None,
+            ..Self::default()
         })
     }
 
@@ -168,9 +209,66 @@ impl Settings {
         Ok(self)
     }
 
+    pub fn with_mode(mut self, mode: ClickMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     pub fn with_target(mut self, target: Option<Point>) -> Result<Self> {
         self.target = target;
         Ok(self)
+    }
+
+    pub fn with_points(mut self, points: &[Point]) -> Result<Self> {
+        if points.len() > MAX_POINTS {
+            bail!("at most {MAX_POINTS} points are supported");
+        }
+
+        self.points = [None; MAX_POINTS];
+        for (slot, point) in self.points.iter_mut().zip(points.iter().copied()) {
+            *slot = Some(point);
+        }
+        Ok(self)
+    }
+
+    pub fn with_point_interval_ms(mut self, interval_ms: u32) -> Result<Self> {
+        if !(1..=MAX_POINT_INTERVAL_MS).contains(&interval_ms) {
+            bail!("point interval must be between 1 and {MAX_POINT_INTERVAL_MS} ms");
+        }
+        self.point_interval = Duration::from_millis(interval_ms as u64);
+        Ok(self)
+    }
+
+    pub fn point_interval_ms(&self) -> f64 {
+        self.point_interval.as_secs_f64() * 1000.0
+    }
+
+    pub fn point_count(&self) -> usize {
+        self.points.iter().flatten().count()
+    }
+
+    pub fn point_at(&self, index: usize) -> Option<Point> {
+        self.points.iter().flatten().nth(index).copied()
+    }
+
+    /// Check the mode-specific requirements that must hold before a session
+    /// can start. Stored settings may be incomplete while the user edits them.
+    pub fn readiness(&self) -> Result<()> {
+        match self.mode {
+            ClickMode::Cursor => Ok(()),
+            ClickMode::Point => {
+                if self.target.is_none() {
+                    bail!("point mode requires X and Y coordinates");
+                }
+                Ok(())
+            }
+            ClickMode::Sequence => {
+                if self.point_count() < 2 {
+                    bail!("sequence mode requires at least two points");
+                }
+                Ok(())
+            }
+        }
     }
 
     pub fn hold_ms(&self) -> f64 {
@@ -183,33 +281,34 @@ impl Settings {
 
     pub fn to_wire_command(&self, command: &str) -> String {
         let mut wire = format!(
-            "{command} {} {} {} {}",
+            "{command} {} {} {} {} {} {} {} {}",
             format_number(self.cps),
             self.button,
             format_number(self.hold_ms()),
-            format_number(self.jitter_pct)
+            format_number(self.jitter_pct),
+            self.limit,
+            format_number(self.delay_ms()),
+            self.multi_click,
+            self.mode
         );
 
-        // Keep the legacy four-field command when the optional features are
-        // unused so an older daemon can still handle basic `on`/`set` calls.
-        if self.limit != 0
-            || !self.delay.is_zero()
-            || self.multi_click != 1
-            || self.target.is_some()
-        {
-            wire.push_str(&format!(
-                " {} {}",
-                self.limit,
-                format_number(self.delay_ms())
-            ));
-        }
-
-        if self.multi_click != 1 || self.target.is_some() {
-            wire.push_str(&format!(" {}", self.multi_click));
-        }
-
-        if let Some(target) = self.target {
-            wire.push_str(&format!(" {} {}", target.x, target.y));
+        match self.mode {
+            ClickMode::Cursor => {}
+            ClickMode::Point => {
+                if let Some(target) = self.target {
+                    wire.push_str(&format!(" {} {}", target.x, target.y));
+                }
+            }
+            ClickMode::Sequence => {
+                wire.push_str(&format!(
+                    " {} {}",
+                    format_number(self.point_interval_ms()),
+                    self.point_count()
+                ));
+                for point in self.points.iter().flatten() {
+                    wire.push_str(&format!(" {} {}", point.x, point.y));
+                }
+            }
         }
 
         wire
@@ -286,9 +385,20 @@ impl Status {
             .target
             .map(|point| format!("{},{}", point.x, point.y))
             .unwrap_or_else(|| String::from("none"));
+        let points = if self.settings.point_count() == 0 {
+            String::from("none")
+        } else {
+            self.settings
+                .points
+                .iter()
+                .flatten()
+                .map(|point| format!("{},{}", point.x, point.y))
+                .collect::<Vec<_>>()
+                .join(";")
+        };
 
         format!(
-            "OK\nprotocol: {}\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nlimit: {}\ndelay_ms: {}\nmulti_click: {}\ntarget: {}\nactual_cps: {:.1}\nclicks: {}\nsession_clicks: {}\nstarting: {}\ndelay_left_ms: {}\nstop_reason: {}\nhotkey: {}\nhotkey_active: {}\nhold_hotkey: {}\nhold_hotkey_active: {}\nhold_active: {}\nhotkey_paused: {}\nhotkey_error: {}\nerror: {}\n",
+            "OK\nprotocol: {}\nenabled: {}\ncps: {}\nbutton: {}\nhold_ms: {}\njitter_pct: {}\nlimit: {}\ndelay_ms: {}\nmulti_click: {}\nmode: {}\ntarget: {}\ninterval_ms: {}\npoints: {}\nactual_cps: {:.1}\nclicks: {}\nsession_clicks: {}\nstarting: {}\ndelay_left_ms: {}\nstop_reason: {}\nhotkey: {}\nhotkey_active: {}\nhold_hotkey: {}\nhold_hotkey_active: {}\nhold_active: {}\nhotkey_paused: {}\nhotkey_error: {}\nerror: {}\n",
             self.protocol,
             self.enabled,
             format_number(self.settings.cps),
@@ -298,7 +408,10 @@ impl Status {
             self.settings.limit,
             format_number(self.settings.delay_ms()),
             self.settings.multi_click,
+            self.settings.mode,
             target,
+            format_number(self.settings.point_interval_ms()),
+            points,
             self.actual_cps,
             self.clicks,
             self.session_clicks,
@@ -337,7 +450,10 @@ impl Status {
         let mut limit = None;
         let mut delay_ms = None;
         let mut multi_click = None;
+        let mut mode = None;
         let mut target = None;
+        let mut interval_ms = None;
+        let mut points = Vec::new();
         let mut actual_cps = None;
         let mut clicks = None;
         let mut session_clicks = None;
@@ -369,6 +485,7 @@ impl Status {
                 "limit" => limit = Some(value.parse::<u64>()?),
                 "delay_ms" => delay_ms = Some(value.parse::<f64>()?),
                 "multi_click" => multi_click = Some(value.parse::<u8>()?),
+                "mode" => mode = ClickMode::parse(value),
                 "target" => {
                     target = if value.is_empty() || value.eq_ignore_ascii_case("none") {
                         None
@@ -378,6 +495,18 @@ impl Status {
                             .ok_or_else(|| anyhow::anyhow!("malformed target `{value}`"))?;
                         Some(Point::new(x.trim().parse()?, y.trim().parse()?))
                     };
+                }
+                "interval_ms" => interval_ms = Some(value.parse::<u32>()?),
+                "points" => {
+                    points.clear();
+                    if !value.is_empty() && !value.eq_ignore_ascii_case("none") {
+                        for pair in value.split(';') {
+                            let (x, y) = pair
+                                .split_once(',')
+                                .ok_or_else(|| anyhow::anyhow!("malformed point `{pair}`"))?;
+                            points.push(Point::new(x.trim().parse()?, y.trim().parse()?));
+                        }
+                    }
                 }
                 "actual_cps" => actual_cps = Some(value.parse::<f64>()?),
                 "clicks" => clicks = Some(value.parse::<u64>()?),
@@ -429,6 +558,13 @@ impl Status {
             }
         }
 
+        let inferred_mode = if target.is_some() {
+            ClickMode::Point
+        } else {
+            ClickMode::Cursor
+        };
+        let mode = mode.unwrap_or(inferred_mode);
+
         let settings = Settings::new(
             cps.ok_or_else(|| anyhow::anyhow!("status is missing `cps`"))?,
             button.ok_or_else(|| anyhow::anyhow!("status is missing `button`"))?,
@@ -438,7 +574,10 @@ impl Status {
         .with_limit(limit.unwrap_or(0))?
         .with_delay_ms(delay_ms.unwrap_or(0.0))?
         .with_multi_click(multi_click.unwrap_or(1))?
-        .with_target(target)?;
+        .with_mode(mode)
+        .with_target(target)?
+        .with_points(&points)?
+        .with_point_interval_ms(interval_ms.unwrap_or(DEFAULT_POINT_INTERVAL_MS))?;
 
         Ok(Self {
             protocol: protocol.unwrap_or(0),
@@ -900,20 +1039,37 @@ mod tests {
     }
 
     #[test]
-    fn optional_settings_extend_the_wire_command() {
+    fn wire_command_carries_the_click_mode() {
         let base = Settings::new(125.0, Button::Left, 10.0, 0.0).unwrap();
-        assert_eq!(base.to_wire_command("ON"), "ON 125 left 10 0");
+        assert_eq!(base.to_wire_command("ON"), "ON 125 left 10 0 0 0 1 cursor");
 
         let extended = base.with_limit(500).unwrap().with_delay_ms(250.0).unwrap();
-        assert_eq!(extended.to_wire_command("ON"), "ON 125 left 10 0 500 250");
+        assert_eq!(
+            extended.to_wire_command("ON"),
+            "ON 125 left 10 0 500 250 1 cursor"
+        );
 
         let multi = base.with_multi_click(3).unwrap();
-        assert_eq!(multi.to_wire_command("ON"), "ON 125 left 10 0 0 0 3");
+        assert_eq!(multi.to_wire_command("ON"), "ON 125 left 10 0 0 0 3 cursor");
 
-        let target = base.with_target(Some(Point::new(-10, 20))).unwrap();
+        let target = base
+            .with_mode(ClickMode::Point)
+            .with_target(Some(Point::new(-10, 20)))
+            .unwrap();
         assert_eq!(
             target.to_wire_command("ON"),
-            "ON 125 left 10 0 0 0 1 -10 20"
+            "ON 125 left 10 0 0 0 1 point -10 20"
+        );
+
+        let sequence = base
+            .with_mode(ClickMode::Sequence)
+            .with_points(&[Point::new(1, 2), Point::new(-3, 4)])
+            .unwrap()
+            .with_point_interval_ms(250)
+            .unwrap();
+        assert_eq!(
+            sequence.to_wire_command("ON"),
+            "ON 125 left 10 0 0 0 1 sequence 250 2 1 2 -3 4"
         );
     }
 
@@ -924,6 +1080,59 @@ mod tests {
         assert!(base.with_multi_click(3).is_ok());
         assert!(base.with_multi_click(0).is_err());
         assert!(base.with_multi_click(4).is_err());
+    }
+
+    #[test]
+    fn sequence_points_are_bounded_and_indexed_in_order() {
+        let base = Settings::default();
+        assert!(
+            base.with_points(&[Point::new(0, 0); MAX_POINTS + 1])
+                .is_err()
+        );
+        assert!(base.with_point_interval_ms(0).is_err());
+        assert!(
+            base.with_point_interval_ms(MAX_POINT_INTERVAL_MS + 1)
+                .is_err()
+        );
+
+        let points: Vec<Point> = (0..MAX_POINTS as i32).map(|i| Point::new(i, -i)).collect();
+        let settings = base.with_points(&points).unwrap();
+        assert_eq!(settings.point_count(), MAX_POINTS);
+        assert_eq!(settings.point_at(0), Some(Point::new(0, 0)));
+        assert_eq!(settings.point_at(15), Some(Point::new(15, -15)));
+        assert_eq!(settings.point_at(16), None);
+    }
+
+    #[test]
+    fn readiness_checks_the_active_mode() {
+        assert!(Settings::default().readiness().is_ok());
+
+        let point = Settings::default().with_mode(ClickMode::Point);
+        assert!(point.readiness().is_err());
+        assert!(
+            point
+                .with_target(Some(Point::new(1, 2)))
+                .unwrap()
+                .readiness()
+                .is_ok()
+        );
+
+        let sequence = Settings::default().with_mode(ClickMode::Sequence);
+        assert!(sequence.readiness().is_err());
+        assert!(
+            sequence
+                .with_points(&[Point::new(1, 2)])
+                .unwrap()
+                .readiness()
+                .is_err()
+        );
+        assert!(
+            sequence
+                .with_points(&[Point::new(1, 2), Point::new(3, 4)])
+                .unwrap()
+                .readiness()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -959,6 +1168,7 @@ mod tests {
             .unwrap()
             .with_multi_click(3)
             .unwrap()
+            .with_mode(ClickMode::Point)
             .with_target(Some(Point::new(-1920, 1080)))
             .unwrap();
         let status = Status {
@@ -987,6 +1197,48 @@ mod tests {
     }
 
     #[test]
+    fn status_wire_round_trips_sequence_mode() {
+        let settings = Settings::new(123.456, Button::Middle, 7.25, 33.5)
+            .unwrap()
+            .with_limit(500)
+            .unwrap()
+            .with_delay_ms(250.0)
+            .unwrap()
+            .with_multi_click(3)
+            .unwrap()
+            .with_mode(ClickMode::Sequence)
+            .with_points(&[Point::new(10, 20), Point::new(-30, 40), Point::new(50, -60)])
+            .unwrap()
+            .with_point_interval_ms(275)
+            .unwrap();
+        let status = Status {
+            protocol: PROTOCOL,
+            enabled: true,
+            settings,
+            actual_cps: 99.9,
+            clicks: 42,
+            session_clicks: 17,
+            starting: true,
+            delay_left_ms: 123,
+            stop_reason: Some(StopReason::Limit),
+            hotkey: "ctrl+alt+c".to_string(),
+            hotkey_active: "ctrl+shift+f8".to_string(),
+            hold_hotkey: "f9".to_string(),
+            hold_hotkey_active: "f9".to_string(),
+            hold_active: true,
+            hotkey_paused: false,
+            hotkey_error: Some("hotkey is already in use".to_string()),
+            last_error: Some("press failed: permission denied".to_string()),
+        };
+
+        let parsed = Status::from_wire(&status.to_wire()).unwrap();
+
+        assert_eq!(parsed, status);
+        assert_eq!(parsed.settings.point_count(), 3);
+        assert_eq!(parsed.settings.point_at(1), Some(Point::new(-30, 40)));
+    }
+
+    #[test]
     fn status_wire_reports_errors() {
         let error = Status::from_wire("ERR invalid cps\n").unwrap_err();
         assert!(error.to_string().contains("invalid cps"));
@@ -1010,7 +1262,13 @@ mod tests {
         assert_eq!(parsed.settings.limit, 0);
         assert_eq!(parsed.settings.delay, Duration::ZERO);
         assert_eq!(parsed.settings.multi_click, 1);
+        assert_eq!(parsed.settings.mode, ClickMode::Cursor);
         assert_eq!(parsed.settings.target, None);
+        assert_eq!(parsed.settings.point_count(), 0);
+        assert_eq!(
+            parsed.settings.point_interval,
+            Duration::from_millis(DEFAULT_POINT_INTERVAL_MS as u64)
+        );
         assert_eq!(parsed.session_clicks, 0);
         assert!(!parsed.starting);
         assert!(!parsed.hotkey_paused);

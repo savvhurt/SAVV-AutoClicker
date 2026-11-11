@@ -1,4 +1,5 @@
-//! Linux autostart integration through a freedesktop `.desktop` file.
+//! Autostart integration: a freedesktop `.desktop` file on Linux and the
+//! per-user `Run` registry key on Windows.
 
 use anyhow::Result;
 
@@ -12,28 +13,40 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 
-pub const SUPPORTED: bool = cfg!(target_os = "linux");
+pub const SUPPORTED: bool = cfg!(any(target_os = "linux", windows));
 
 #[cfg(target_os = "linux")]
-const ICON: &[u8] = include_bytes!("../assets/icon/autoclicker-256.png");
+const ICON: &[u8] = include_bytes!("../assets/icon/savv-autoclicker-256.png");
+
+#[cfg(target_os = "linux")]
+const NAME: &str = "SAVV-AutoClicker";
+
+#[cfg(target_os = "linux")]
+const ICON_NAME: &str = "savv-autoclicker";
 
 #[cfg(target_os = "linux")]
 pub fn is_enabled() -> bool {
     autostart_path().is_ok_and(|path| path.exists())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub fn is_enabled() -> bool {
+    windows_registry::is_enabled()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn is_enabled() -> bool {
     false
 }
 
 #[cfg(target_os = "linux")]
-pub fn set_enabled(enabled: bool) -> Result<()> {
+pub fn set_enabled(enabled: bool, _start_hidden: bool) -> Result<()> {
     let executable = env::current_exe().context("cannot resolve the current executable path")?;
 
     if enabled {
         install_menu_entry(&executable)?;
         install_icon()?;
+        remove_legacy_entries();
 
         let path = autostart_path()?;
         if let Some(parent) = path.parent() {
@@ -41,21 +54,23 @@ pub fn set_enabled(enabled: bool) -> Result<()> {
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
 
+        // Start the GUI, not a detached daemon: the tray setting lives in the
+        // GUI config and the window is where the user expects the app.
         let entry = format!(
             "[Desktop Entry]\n\
              Type=Application\n\
-             Name=Autoclicker\n\
+             Name={NAME}\n\
              Comment=Virtual mouse autoclicker\n\
-             Exec={} daemon --detach\n\
-             Icon=autoclicker\n\
+             Exec={}\n\
+             Icon={ICON_NAME}\n\
              Terminal=false\n\
              X-GNOME-Autostart-enabled=true\n\
              NoDisplay=false\n",
             desktop_quote(&executable)
         );
-        write_atomic(&path, entry.as_bytes())?;
-        Ok(())
+        write_atomic(&path, entry.as_bytes())
     } else {
+        remove_legacy_entries();
         match autostart_path() {
             Ok(path) => match fs::remove_file(&path) {
                 Ok(()) => Ok(()),
@@ -69,16 +84,21 @@ pub fn set_enabled(enabled: bool) -> Result<()> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn set_enabled(_enabled: bool) -> Result<()> {
-    anyhow::bail!("autostart is available on Linux only")
+#[cfg(windows)]
+pub fn set_enabled(enabled: bool, start_hidden: bool) -> Result<()> {
+    windows_registry::set_enabled(enabled, start_hidden)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub fn set_enabled(_enabled: bool, _start_hidden: bool) -> Result<()> {
+    anyhow::bail!("autostart is available on Linux and Windows only")
 }
 
 #[cfg(target_os = "linux")]
 fn install_menu_entry(executable: &Path) -> Result<()> {
     let path = data_home()?
         .join("applications")
-        .join("autoclicker.desktop");
+        .join(format!("{ICON_NAME}.desktop"));
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -87,10 +107,10 @@ fn install_menu_entry(executable: &Path) -> Result<()> {
     let entry = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=Autoclicker\n\
+         Name={NAME}\n\
          Comment=Virtual mouse autoclicker\n\
          Exec={}\n\
-         Icon=autoclicker\n\
+         Icon={ICON_NAME}\n\
          Terminal=false\n\
          Categories=Utility;\n",
         desktop_quote(executable)
@@ -100,7 +120,9 @@ fn install_menu_entry(executable: &Path) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn install_icon() -> Result<()> {
-    let path = data_home()?.join("icons/hicolor/256x256/apps/autoclicker.png");
+    let path = data_home()?
+        .join("icons/hicolor/256x256/apps")
+        .join(format!("{ICON_NAME}.png"));
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -109,8 +131,23 @@ fn install_icon() -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+fn remove_legacy_entries() {
+    if let Ok(path) = autostart_path() {
+        if let Some(directory) = path.parent() {
+            let _ = fs::remove_file(directory.join("autoclicker.desktop"));
+        }
+    }
+    if let Ok(home) = data_home() {
+        let _ = fs::remove_file(home.join("applications/autoclicker.desktop"));
+        let _ = fs::remove_file(home.join("icons/hicolor/256x256/apps/autoclicker.png"));
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn autostart_path() -> Result<PathBuf> {
-    Ok(config_home()?.join("autostart").join("autoclicker.desktop"))
+    Ok(config_home()?
+        .join("autostart")
+        .join(format!("{ICON_NAME}.desktop")))
 }
 
 #[cfg(target_os = "linux")]
@@ -180,6 +217,112 @@ fn desktop_quote(path: &Path) -> String {
     }
     quoted.push('"');
     quoted
+}
+
+#[cfg(windows)]
+mod windows_registry {
+    use anyhow::{Context, Result, bail};
+    use std::env;
+    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SAM_FLAGS, REG_SZ,
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    };
+    use windows::core::PCWSTR;
+
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const VALUE_NAME: &str = "SAVV-AutoClicker";
+    const LEGACY_VALUE_NAME: &str = "Autoclicker";
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn open_key(access: REG_SAM_FLAGS) -> Result<Option<HKEY>> {
+        let subkey = wide(RUN_KEY);
+        let mut key = HKEY::default();
+        let status = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(subkey.as_ptr()),
+                None,
+                access,
+                &mut key,
+            )
+        };
+
+        if status == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+        status
+            .ok()
+            .with_context(|| "failed to open the Windows autostart registry key")?;
+        Ok(Some(key))
+    }
+
+    pub fn is_enabled() -> bool {
+        let Ok(Some(key)) = open_key(KEY_QUERY_VALUE) else {
+            return false;
+        };
+        let name = wide(VALUE_NAME);
+        let status =
+            unsafe { RegQueryValueExW(key, PCWSTR(name.as_ptr()), None, None, None, None) };
+        unsafe {
+            let _ = RegCloseKey(key);
+        }
+        status.is_ok()
+    }
+
+    pub fn set_enabled(enabled: bool, start_hidden: bool) -> Result<()> {
+        if enabled {
+            let executable =
+                env::current_exe().context("cannot resolve the current executable path")?;
+            let mut command = format!("\"{}\"", executable.display());
+            if start_hidden {
+                command.push_str(" --hidden");
+            }
+
+            let Some(key) = open_key(KEY_SET_VALUE)? else {
+                bail!("the Windows autostart registry key does not exist");
+            };
+            let name = wide(VALUE_NAME);
+            // REG_SZ data includes the terminating NUL.
+            let data = wide(&command);
+            let bytes: Vec<u8> = data.iter().flat_map(|unit| unit.to_le_bytes()).collect();
+            let status =
+                unsafe { RegSetValueExW(key, PCWSTR(name.as_ptr()), None, REG_SZ, Some(&bytes)) };
+            unsafe {
+                let _ = RegCloseKey(key);
+            }
+            status
+                .ok()
+                .with_context(|| "failed to write the Windows autostart registry value")?;
+        } else {
+            if let Some(key) = open_key(KEY_SET_VALUE)? {
+                let name = wide(VALUE_NAME);
+                let status = unsafe { RegDeleteValueW(key, PCWSTR(name.as_ptr())) };
+                unsafe {
+                    let _ = RegCloseKey(key);
+                }
+                if status.is_err() && status != ERROR_FILE_NOT_FOUND {
+                    status
+                        .ok()
+                        .with_context(|| "failed to remove the Windows autostart registry value")?;
+                }
+            }
+        }
+
+        // Drop the pre-rename value if an old build created one.
+        if let Some(key) = open_key(KEY_SET_VALUE)? {
+            let name = wide(LEGACY_VALUE_NAME);
+            unsafe {
+                let _ = RegDeleteValueW(key, PCWSTR(name.as_ptr()));
+                let _ = RegCloseKey(key);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

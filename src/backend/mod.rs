@@ -59,6 +59,26 @@ pub fn cursor_position() -> Result<Point> {
     }
 }
 
+/// Wait for the next mouse click anywhere on the desktop and return the
+/// cursor position at the moment of the click. `Ok(None)` means the user
+/// cancelled the capture with Escape.
+pub fn capture_point() -> Result<Option<Point>> {
+    #[cfg(windows)]
+    {
+        win::capture_point()
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        linux::capture_point()
+    }
+
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        anyhow::bail!("picking a point is not available on this platform")
+    }
+}
+
 pub fn create() -> Result<Box<dyn Backend>> {
     #[cfg(target_os = "linux")]
     {

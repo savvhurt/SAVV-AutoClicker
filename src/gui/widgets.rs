@@ -500,6 +500,50 @@ pub fn notice_line(ui: &mut Ui, tone: Color32, title: &str, text: &str) -> Respo
     .inner
 }
 
+pub fn pipette_button(ui: &mut Ui, active: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(26.0, 24.0), Sense::click());
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    let accent = theme::accent();
+    let color = if active {
+        accent
+    } else if response.hovered() {
+        theme::text()
+    } else {
+        theme::muted()
+    };
+
+    if active || response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(6),
+            theme::alpha(accent, if active { 24 } else { 10 }),
+        );
+    }
+
+    // A small eyedropper: round bulb at the top right, diagonal stem and a
+    // wider tip at the bottom left.
+    let center = rect.center();
+    let painter = ui.painter();
+    let bulb = pos2(center.x + 4.0, center.y - 4.0);
+    painter.circle_filled(bulb, 3.0, color);
+    painter.line_segment(
+        [
+            pos2(center.x + 2.0, center.y - 2.0),
+            pos2(center.x - 5.0, center.y + 5.0),
+        ],
+        Stroke::new(1.8_f32, color),
+    );
+    painter.line_segment(
+        [
+            pos2(center.x - 5.0, center.y + 5.0),
+            pos2(center.x - 7.0, center.y + 7.0),
+        ],
+        Stroke::new(2.8_f32, color),
+    );
+
+    response
+}
+
 pub fn text_button(ui: &mut Ui, label: &str, idle: Color32, hover: Color32) -> Response {
     let enabled = ui.is_enabled();
     let idle = if enabled { idle } else { theme::dim() };

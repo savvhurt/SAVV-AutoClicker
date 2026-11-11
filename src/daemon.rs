@@ -76,7 +76,7 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
         if ipc::send("STATUS").is_ok() {
             #[cfg(windows)]
             apply_hotkey_to_running_daemon(&hotkey_combo, &hold_combo)?;
-            println!("autoclicker: daemon is running");
+            println!("savv-autoclicker: daemon is running");
             return Ok(());
         }
 
@@ -94,13 +94,15 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if ipc::send("STATUS").is_ok() {
-                println!("autoclicker: daemon is running");
+                println!("savv-autoclicker: daemon is running");
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(50));
         }
 
-        bail!("the daemon did not start; run `autoclicker daemon` in a terminal to see the error");
+        bail!(
+            "the daemon did not start; run `savv-autoclicker daemon` in a terminal to see the error"
+        );
     }
 
     let Some(_lock) = platform::InstanceLock::acquire()? else {
@@ -109,7 +111,7 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
             apply_hotkey_to_running_daemon(&hotkey_combo, &hold_combo)?;
         }
         #[cfg(not(windows))]
-        eprintln!("autoclicker: another daemon is already running");
+        eprintln!("savv-autoclicker: another daemon is already running");
         return Ok(());
     };
 
@@ -127,14 +129,14 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
         match backend::win::spawn_hotkey(shared.clone(), hotkey, hold_hotkey) {
             Ok(()) => {
                 if hold_combo.is_empty() {
-                    eprintln!("autoclicker: daemon ready, global hotkey: {hotkey_combo}");
+                    eprintln!("savv-autoclicker: daemon ready, global hotkey: {hotkey_combo}");
                 } else {
                     eprintln!(
-                        "autoclicker: daemon ready, global hotkeys: {hotkey_combo} / hold {hold_combo}"
+                        "savv-autoclicker: daemon ready, global hotkeys: {hotkey_combo} / hold {hold_combo}"
                     );
                 }
             }
-            Err(error) => eprintln!("autoclicker: warning: {error:#}"),
+            Err(error) => eprintln!("savv-autoclicker: warning: {error:#}"),
         }
     }
 
@@ -155,14 +157,14 @@ pub fn run_daemon(args: DaemonArgs) -> Result<()> {
     #[cfg(not(windows))]
     {
         eprintln!(
-            "autoclicker: daemon ready; bind `autoclicker toggle` to a compositor shortcut (niri: Mod+Alt+C). --hotkey is ignored on Linux"
+            "savv-autoclicker: daemon ready; bind `savv-autoclicker toggle` to a compositor shortcut (niri: Mod+Alt+C). --hotkey is ignored on Linux"
         );
     }
 
     shared.wait_for_quit();
 
     if let Err(error) = scheduler_thread.join() {
-        eprintln!("autoclicker: clicker thread panicked: {error:?}");
+        eprintln!("savv-autoclicker: clicker thread panicked: {error:?}");
     }
     let _ = server_thread.join();
 
@@ -174,7 +176,7 @@ fn apply_hotkey_to_running_daemon(combo: &str, hold_combo: &str) -> Result<()> {
     let response = ipc::send(&format!("HOTKEY {combo}"))
         .context("another daemon is running, but it did not accept the hotkey change")?;
     ipc::ensure_ok(&response)?;
-    println!("autoclicker: hotkey set to {combo}");
+    println!("savv-autoclicker: hotkey set to {combo}");
 
     let response = ipc::send(&format!(
         "HOLD_HOTKEY {}",
@@ -187,7 +189,7 @@ fn apply_hotkey_to_running_daemon(combo: &str, hold_combo: &str) -> Result<()> {
     .context("another daemon is running, but it did not accept the hold hotkey change")?;
     ipc::ensure_ok(&response)?;
     if !hold_combo.is_empty() {
-        println!("autoclicker: hold hotkey set to {hold_combo}");
+        println!("savv-autoclicker: hold hotkey set to {hold_combo}");
     }
     Ok(())
 }
@@ -197,7 +199,7 @@ fn install_ctrlc(shared: Arc<SharedState>, required: bool) -> Result<()> {
         if required {
             bail!("failed to install the Ctrl+C handler: {error}");
         }
-        eprintln!("autoclicker: warning: Ctrl+C handler not installed: {error}");
+        eprintln!("savv-autoclicker: warning: Ctrl+C handler not installed: {error}");
     }
     Ok(())
 }

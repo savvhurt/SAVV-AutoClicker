@@ -1,11 +1,11 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::state::{Button, Point, Settings};
+use crate::state::{Button, ClickMode, Point, Settings};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "autoclicker",
+    name = "savv-autoclicker",
     version,
     about = "Fast virtual-mouse autoclicker for Linux and Windows",
     long_about = None
@@ -128,11 +128,18 @@ impl ClickArgs {
             _ => anyhow::bail!("--x and --y must be supplied together"),
         };
 
-        Settings::new(self.cps, self.button.into(), self.hold_ms, self.jitter_pct)?
-            .with_limit(self.limit)?
-            .with_delay_ms(self.delay_ms)?
-            .with_multi_click(self.multi_click)?
-            .with_target(target)
+        Ok(
+            Settings::new(self.cps, self.button.into(), self.hold_ms, self.jitter_pct)?
+                .with_limit(self.limit)?
+                .with_delay_ms(self.delay_ms)?
+                .with_multi_click(self.multi_click)?
+                .with_target(target)?
+                .with_mode(if target.is_some() {
+                    ClickMode::Point
+                } else {
+                    ClickMode::Cursor
+                }),
+        )
     }
 
     pub fn to_wire_command(&self) -> Result<String> {

@@ -47,6 +47,39 @@ pub fn cursor_position() -> Result<Point> {
     Ok(Point::new(point.x, point.y))
 }
 
+/// Poll the mouse and keyboard instead of installing a low-level hook: the
+/// daemon uses `SendInput`, and a hook would also see the synthetic clicks.
+pub fn capture_point() -> Result<Option<Point>> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_ESCAPE, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+    };
+
+    const POLL: Duration = Duration::from_millis(8);
+    const RELEASE_WAIT: Duration = Duration::from_secs(3);
+
+    let down = |key: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY| {
+        (unsafe { GetAsyncKeyState(key.0 as i32) } as u16 & 0x8000) != 0
+    };
+    let any_button = || down(VK_LBUTTON) || down(VK_RBUTTON) || down(VK_MBUTTON);
+
+    // The eyedropper button was clicked with the left mouse button; wait for
+    // the user to release it before looking for the target click.
+    let deadline = std::time::Instant::now() + RELEASE_WAIT;
+    while any_button() && std::time::Instant::now() < deadline {
+        thread::sleep(POLL);
+    }
+
+    loop {
+        thread::sleep(POLL);
+        if down(VK_ESCAPE) {
+            return Ok(None);
+        }
+        if any_button() {
+            return cursor_position().map(Some);
+        }
+    }
+}
+
 fn move_cursor(point: Point) -> Result<()> {
     unsafe { SetCursorPos(point.x, point.y) }.context("SetCursorPos failed")
 }

@@ -1,4 +1,4 @@
-# SAVV-Autoclicker
+# SAVV-AutoClicker
 
 A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
 **Windows**. Clicks are injected at the operating-system level:
@@ -15,10 +15,16 @@ A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
 - Start delay of 0–10 000 ms. It applies only to the start of a new session;
   stopping during the delay cancels the start.
 - Left, right and middle mouse button.
-- **Click at a fixed point**: enter X/Y coordinates and every pulse moves the
-  cursor there before clicking. Available on Windows and Linux/X11; on Wayland
-  the GUI explains that the feature is unavailable. The **Use current** button
-  captures the cursor position.
+- **Three click modes**:
+  - **Cursor** — clicks go to the current cursor position.
+  - **Point** — a single fixed X/Y point; every pulse moves the cursor there
+    before clicking.
+  - **Sequence** — up to 16 points are clicked in order with a configurable
+    interval. The cycle repeats until clicking is stopped.
+- **Eyedropper**: the point and sequence editors have a picker button. Click it,
+  then click anywhere on screen to capture the coordinates into X/Y. Escape
+  cancels. Available on Windows and Linux/X11; on Wayland the GUI explains that
+  the feature is unavailable.
 - **Multi-click**: send 1 (single), 2 (double) or 3 (triple) clicks per pulse.
   A 40 ms pause separates the clicks inside a pulse; the session limit counts
   every individual click.
@@ -29,19 +35,29 @@ A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
 - Hold-to-click on Windows: a separate key starts clicking while it is held and
   stops on release. It does not interfere when clicking was already enabled by
   the toggle hotkey.
-- Light and dark themes. Theme, language, hotkeys and all click settings are
-  saved automatically in `gui.toml`, including when the window is closed
-  accidentally.
+- **UI scale**: 80–150% with presets, saved in `gui.toml`.
+- Light and dark themes. Theme, language, hotkeys, UI scale and all click
+  settings are saved automatically in `gui.toml`, including when the window is
+  closed accidentally.
+- **Restore defaults**: the System tab can reset click settings, mode, points,
+  hotkeys, theme, language and UI scale. OS autostart and the tray preference
+  are kept.
 - **Interface languages**: Auto, English, Русский, Deutsch, Français, Español
   and Português. Auto follows the system locale; an unknown locale falls back to
   English.
-- **Linux autostart**: the System tab can install a freedesktop autostart entry
-  that launches the background daemon (`daemon --detach`) with the session.
+- **Autostart on Linux and Windows**: the System tab installs a freedesktop
+  entry or a per-user registry value that launches the GUI with the session.
+- **Windows tray**: optionally minimize to the notification area; the tray menu
+  restores the window or exits the app.
+- **Windows elevation check**: on startup the app detects whether it runs as
+  administrator and warns that elevated applications and games ignore clicks
+  from a non-elevated process.
 - CLI: `toggle`, `on`, `off`, `status`, `quit`.
 - GUI in the same binary: running without arguments opens the window, while
   subcommands stay on the CLI. Four tabs — **Clicks**, **Mode**, **Hotkeys**,
   **System** — with live settings, statistics and hotkey recording. The window
-  is 460×560 (minimum 420×520) and does not scroll with normal settings.
+  is 460×560 (minimum 420×520) at 100% scale and scrolls when the content does
+  not fit.
 - Numeric fields widen to fit the maximum value, so large values such as
   `1000.0`, `5000.0` or `1000000000` are never cut off.
 - The mouse button is always released on stop, Ctrl+C and daemon shutdown.
@@ -64,8 +80,8 @@ CLI and GUI:
 cargo build --release --features gui
 ```
 
-- Linux: `target/release/autoclicker`
-- Windows: `target\release\autoclicker.exe` (requires a Rust stable MSVC
+- Linux: `target/release/savv-autoclicker`
+- Windows: `target\release\savv-autoclicker.exe` (requires a Rust stable MSVC
   toolchain and Visual Studio Build Tools)
 - The GUI requires Rust 1.92+ (an `egui` 0.34 requirement); the CLI builds on
   older Rust versions.
@@ -81,48 +97,49 @@ cargo install cargo-xwin
 cargo xwin build --release --features gui --target x86_64-pc-windows-msvc
 ```
 
-The result is `target/x86_64-pc-windows-msvc/release/autoclicker.exe`.
+The result is
+`target/x86_64-pc-windows-msvc/release/savv-autoclicker.exe`.
 
 The first build downloads the MSVC CRT and the Windows SDK. The binary is built
 as a windowed application; when started from a terminal it attaches to the
 parent console so `status`, `toggle` and `--help` print output as usual. On a
-fatal GUI error, `%APPDATA%\autoclicker\gui-error.log` is written and a system
-message box is shown.
+fatal GUI error, `%APPDATA%\SAVV-AutoClicker\gui-error.log` is written and a
+system message box is shown.
 
 ### Prebuilt Windows binaries
 
 The **Windows release** workflow (`.github/workflows/release.yml`) is included:
 
 - manual run through **Actions → Windows release → Run workflow** builds
-  `autoclicker-windows-x86_64.zip` and uploads it as an artifact;
+  `savv-autoclicker-windows-x86_64.zip` and uploads it as an artifact;
 - pushing a `v*` tag additionally creates a GitHub Release with the archive.
 
-The archive contains `autoclicker.exe`, the README and the font license.
+The archive contains `savv-autoclicker.exe`, the README and the font license.
 
 ## Quick start
 
 One-off run in the terminal (stop with Ctrl+C):
 
 ```bash
-autoclicker run --cps 50 --button left --hold-ms 10
+savv-autoclicker run --cps 50 --button left --hold-ms 10
 ```
 
 Daemon:
 
 ```bash
-autoclicker toggle          # start the daemon if needed and enable clicking
-autoclicker toggle          # disable
-autoclicker status          # state and measured CPS
-autoclicker off             # disable
-autoclicker quit            # stop the daemon
+savv-autoclicker toggle          # start the daemon if needed and enable clicking
+savv-autoclicker toggle          # disable
+savv-autoclicker status          # state and measured CPS
+savv-autoclicker off             # disable
+savv-autoclicker quit            # stop the daemon
 ```
 
 Start with other settings:
 
 ```bash
-autoclicker on --cps 100 --button right --hold-ms 8 --jitter-pct 10
-autoclicker on --cps 25 --button middle --limit 200
-autoclicker on --cps 50 --delay-ms 1500
+savv-autoclicker on --cps 100 --button right --hold-ms 8 --jitter-pct 10
+savv-autoclicker on --cps 25 --button middle --limit 200
+savv-autoclicker on --cps 50 --delay-ms 1500
 ```
 
 `on` and `toggle` start the daemon automatically. Without the GUI the settings
@@ -132,8 +149,8 @@ live only while the daemon runs; a new daemon starts with the defaults
 Double/triple clicks and fixed-point clicks:
 
 ```bash
-autoclicker on --cps 20 --multi-click 2
-autoclicker on --cps 10 --multi-click 3 --x 640 --y 360
+savv-autoclicker on --cps 20 --multi-click 2
+savv-autoclicker on --cps 10 --multi-click 3 --x 640 --y 360
 ```
 
 `--x` and `--y` must be supplied together. The limit counts every individual
@@ -142,27 +159,27 @@ click, including the clicks inside a multi-click pulse.
 Start the daemon in the background:
 
 ```bash
-autoclicker daemon --detach   # return control immediately
-autoclicker daemon            # foreground, useful for debugging
+savv-autoclicker daemon --detach   # return control immediately
+savv-autoclicker daemon            # foreground, useful for debugging
 ```
 
 ## GUI
 
 ```bash
-./target/release/autoclicker
+./target/release/savv-autoclicker
 ```
 
-![Minimal autoclicker panel](docs/gui.png)
+![SAVV-AutoClicker panel](docs/gui.png)
 
 On Windows:
 
 ```powershell
-.\target\release\autoclicker.exe
+.\target\release\savv-autoclicker.exe
 ```
 
 Without arguments the GUI starts. With arguments the same file works as a CLI:
-`autoclicker.exe status`, `autoclicker.exe toggle`,
-`autoclicker.exe daemon --detach`.
+`savv-autoclicker.exe status`, `savv-autoclicker.exe toggle`,
+`savv-autoclicker.exe daemon --detach`.
 
 The interface is deliberately minimal: a warm paper background or a dark
 palette, ink-like typography, a single signal-orange accent, a large power
@@ -173,23 +190,51 @@ the palette on the fly and is saved to `gui.toml`.
 
 Tabs:
 
-- **Clicks** — speed, mouse button, hold duration, jitter, limit and delay.
-  A limit of `0` disables the restriction; after N clicks the session stops by
-  itself. The delay of 0–10 000 ms applies only to the start of a new session:
-  stopping while waiting cancels the start. All values are applied live,
-  including during clicking.
-- **Mode** — choose between clicking at the current cursor position and a fixed
-  point, edit the X/Y coordinates, capture the current cursor position, and
-  select single, double or triple clicks per pulse.
+- **Clicks** — speed (hidden in sequence mode), mouse button, hold duration,
+  jitter, limit and delay. A limit of `0` disables the restriction; after N
+  clicks the session stops by itself. The delay of 0–10 000 ms applies only to
+  the start of a new session: stopping while waiting cancels the start. All
+  values are applied live, including during clicking.
+- **Mode** — choose Cursor, Point or Sequence mode, edit X/Y coordinates,
+  capture a point with the eyedropper, manage up to 16 sequence points and their
+  interval, and select single, double or triple clicks per pulse.
 - **Hotkeys** — on Windows, record the global toggle hotkey and the separate
   hold-to-click key. On Linux, the recommended `MOD+ALT+C → TOGGLE` bind is
   shown with a clickable label that copies a ready-to-use line containing the
   full path to the current binary (see “Hotkey” below).
 - **System** — interface language (Auto or one of six languages), light/dark
-  theme, and the Linux “Start at login” switch.
+  theme, UI scale, autostart, Windows tray and elevation options, and the
+  **Restore defaults** button.
 
-The window is designed for 460×560 px and does not scroll with normal settings;
-the minimum size is 420×520.
+The window is designed for 460×560 px at 100% scale; the minimum size is
+420×520. With UI scaling the window grows or shrinks together with the content,
+and the tab body scrolls when needed.
+
+### Point and sequence modes
+
+In **Point** mode the X/Y fields hold one fixed target. Press the eyedropper
+button next to them and click the desired place on screen; Escape cancels the
+capture. The coordinates can also be typed manually.
+
+In **Sequence** mode press **Add point** to add a row. Each row has its own
+eyedropper and X/Y fields, and can be removed with `×`. The **Point interval**
+(1–60 000 ms) is the pause between points; sequence speed is controlled by this
+interval instead of CPS. At least two points are required to start. Sequence
+points are stored separately from the single Point target, so switching modes
+does not lose either.
+
+### Restore defaults
+
+**System → Restore defaults** asks for confirmation and resets click settings,
+mode, points and interval, hotkeys, theme, language and UI scale. OS autostart
+and the Windows tray preference are left unchanged.
+
+### Windows elevation
+
+Windows blocks synthetic input from a non-elevated process to elevated windows
+(UIPI). At startup the GUI checks whether it runs as administrator. If it does
+not, the System tab shows a warning and a **Restart as administrator** button
+that relaunches the app through the UAC prompt.
 
 On Windows, a hotkey is recorded directly in the interface: click the field,
 then press the key — either without modifiers (`f8`, `space`, `esc`) or combined
@@ -201,9 +246,9 @@ combination stays active. F12 may be reserved by Windows; if so, the usual error
 is shown and the previous key keeps working. If the daemon is an older version
 without hotkey-change support, the GUI restarts it once with the current
 combination. As a fallback,
-`autoclicker.exe daemon --hotkey ctrl+shift+f8` applies the combination to a
-running daemon without a restart. The second hotkey, hold-to-click, has its own
-field; identical keys for toggle and hold are rejected.
+`savv-autoclicker.exe daemon --hotkey ctrl+shift+f8` applies the combination to
+a running daemon without a restart. The second hotkey, hold-to-click, has its
+own field; identical keys for toggle and hold are rejected.
 
 Hold-to-click works only on Windows: press and hold the key — clicks run;
 release — they stop. If clicking is already enabled by the toggle, the hold key
@@ -211,19 +256,25 @@ does nothing. On Linux the field is hidden: the compositor owns the global key
 and hold-to-click is not supported there.
 
 On Windows the GUI starts the daemon when the window opens, so the global key
-works immediately without pressing the start button. Closing the window
-disables clicking and stops the daemon — no background process remains. On
-Linux, closing the window disables clicking but the daemon keeps running; use
-`autoclicker quit` to stop it.
+works immediately without pressing the start button. On Linux the GUI also
+starts the daemon automatically, so clicking works right after the window
+opens. Closing the window disables clicking; the daemon keeps running in the
+background. Use `savv-autoclicker quit` to stop it.
 
-GUI settings (click parameters, theme, language and hotkeys) are saved
-automatically:
+On Windows, enabling **Minimize to tray** hides the window instead of keeping a
+taskbar button. Double-click the tray icon or use **Show** in its menu to
+restore it; **Exit** closes the app. With tray enabled, autostart launches the
+GUI hidden (`--hidden`), so login does not open a window.
 
-- Linux: `$XDG_CONFIG_HOME/autoclicker/gui.toml` or
-  `~/.config/autoclicker/gui.toml`
-- Windows: `%APPDATA%\autoclicker\gui.toml`
+GUI settings (click parameters, theme, language, UI scale, tray preference and
+hotkeys) are saved automatically:
 
-The draft is debounced and applied on change, then saved after the daemon
+- Linux: `$XDG_CONFIG_HOME/savv-autoclicker/gui.toml` or
+  `~/.config/savv-autoclicker/gui.toml`
+- Windows: `%APPDATA%\SAVV-AutoClicker\gui.toml`
+
+An existing `autoclicker/gui.toml` from an older version is migrated on first
+start. The draft is debounced and applied on change, then saved after the daemon
 confirms it. The current draft is also saved when the window receives a close
 request, so an accidental close does not lose changes.
 
@@ -265,12 +316,13 @@ reboot you may need to run `sudo modprobe uinput` again.
 ### Autostart
 
 Open the **System** tab and enable **Start at login**. This writes
-`$XDG_CONFIG_HOME/autostart/autoclicker.desktop` (or
-`~/.config/autostart/autoclicker.desktop`) with the command
-`<current executable> daemon --detach`, and installs a desktop entry and a
-256×256 icon under `$XDG_DATA_HOME` so the app also appears in the launcher.
-Disable the switch to remove the autostart entry. If you move the binary,
-re-enable autostart so the entry points at the new path.
+`$XDG_CONFIG_HOME/autostart/savv-autoclicker.desktop` (or
+`~/.config/autostart/savv-autoclicker.desktop`) with the command
+`<current executable>`, and installs a desktop entry and a 256×256 icon under
+`$XDG_DATA_HOME` so the app also appears in the launcher. Disable the switch to
+remove the autostart entry. If you move the binary, re-enable autostart so the
+entry points at the new path. Legacy `autoclicker.desktop` entries are removed
+automatically.
 
 ### Hotkey
 
@@ -283,14 +335,14 @@ ready-to-use bind containing the full path.
 
 ```kdl
 binds {
-    Mod+Alt+C { spawn "autoclicker" "toggle"; }
+    Mod+Alt+C { spawn "savv-autoclicker" "toggle"; }
 }
 ```
 
 If the binary is not in `PATH`, use the full path:
 
 ```kdl
-Mod+Alt+C { spawn "/home/vvv/autoclicker/target/release/autoclicker" "toggle"; }
+Mod+Alt+C { spawn "/home/vvv/autoclicker/target/release/savv-autoclicker" "toggle"; }
 ```
 
 Do not use `Mod+Shift+C`: it is already bound in many niri configurations
@@ -300,31 +352,31 @@ Do not use `Mod+Shift+C`: it is already bound in many niri configurations
 **GNOME / KDE** — Settings → Keyboard → Custom Shortcut, command:
 
 ```bash
-autoclicker toggle
+savv-autoclicker toggle
 ```
 
-Clicks go to the current cursor position (or to the fixed point when one is
-set), so place the pointer where you need it before enabling clicking.
+Clicks go to the current cursor position, to the fixed point, or through the
+configured sequence, so arrange the target before enabling clicking.
 
 ### Fixed-point clicking
 
 Fixed-point clicking uses X11 `XWarpPointer`, so it works on X11 sessions and in
 XWayland applications but not on a native Wayland session. The Mode tab detects
-Wayland and shows a notice instead of silently doing nothing. On X11, **Use
-current** reads the cursor position through the X server.
+Wayland and shows a notice instead of silently doing nothing. On X11, the
+eyedropper reads the cursor position through the X server.
 
 ## Windows
 
 Start the daemon:
 
 ```powershell
-.\autoclicker.exe daemon
+.\savv-autoclicker.exe daemon
 ```
 
 Or detached, without holding the console:
 
 ```powershell
-.\autoclicker.exe daemon --detach
+.\savv-autoclicker.exe daemon --detach
 ```
 
 The default global hotkey is **Ctrl+Alt+C**. It toggles clicking while the
@@ -338,16 +390,16 @@ the combination, the daemon keeps the previous one and reports the error.
 For the CLI, set another combination when starting the daemon:
 
 ```powershell
-.\autoclicker.exe daemon --hotkey f8
-.\autoclicker.exe daemon --hotkey ctrl+shift+f8
-.\autoclicker.exe daemon --hotkey alt+space --hold-hotkey f9
+.\savv-autoclicker.exe daemon --hotkey f8
+.\savv-autoclicker.exe daemon --hotkey ctrl+shift+f8
+.\savv-autoclicker.exe daemon --hotkey alt+space --hold-hotkey f9
 ```
 
 If the daemon is already running, this command applies the new keys without a
 restart. The requested and actually active combinations are available in:
 
 ```powershell
-.\autoclicker.exe status
+.\savv-autoclicker.exe status
 ```
 
 The output includes `hotkey`, `hotkey_active`, `hold_hotkey`,
@@ -368,41 +420,52 @@ Hold-to-click uses a separate key — in the GUI on the **Hotkeys** tab or throu
 the CLI:
 
 ```powershell
-.\autoclicker.exe daemon --hold-hotkey f9
+.\savv-autoclicker.exe daemon --hold-hotkey f9
 ```
 
 Press and hold the key — clicks run; release — they stop. Hold works only while
 clicking is disabled by the toggle. On Linux hold-to-click is unavailable; the
 compositor owns the global key.
 
-Autostart: create a shortcut to `autoclicker.exe daemon --detach` in the
-`shell:startup` folder. A console window flashes at login and the daemon then
-stays hidden.
+### Windows autostart and tray
 
-When upgrading from an older version: stop the old daemon
-(`autoclicker.exe quit`), close the old GUI and delete `autoclicker-gui.exe`.
-The new `autoclicker.exe` opens the GUI without arguments; the separate
-`autoclicker-gui.exe` is no longer needed.
+Enable **Start at login** in the System tab to add the per-user value
+`SAVV-AutoClicker` under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. The value points at the
+current executable. If **Minimize to tray** is also enabled, autostart adds
+`--hidden`, so the app starts in the notification area without opening a window.
+Disable the checkbox to remove the value.
 
-The CLI works the same as on Linux:
-
-```powershell
-.\autoclicker.exe toggle
-.\autoclicker.exe on --cps 100 --button left
-.\autoclicker.exe status
-.\autoclicker.exe off
-.\autoclicker.exe quit
-```
+With **Minimize to tray** enabled, minimizing the window hides it and keeps the
+app in the notification area. The tray menu offers **Show** (restore the window)
+and **Exit** (close the app and stop the daemon).
 
 ### Windows limitations
 
-- `SendInput` cannot click into windows running as administrator unless the
-  autoclicker is elevated too (UIPI).
+- `SendInput` cannot click into windows running as administrator unless
+  SAVV-AutoClicker is elevated too (UIPI). The GUI warns at startup and can
+  restart itself as administrator.
 - Some games and anti-cheat systems ignore or block synthetic input.
 - If the process is force-terminated with `TerminateProcess`, the mouse button
   may stay pressed: stop with `off`, `quit` or the hotkey instead. A short
   `hold` reduces the impact.
 - The binary is not signed, so SmartScreen may show a warning.
+
+When upgrading from an older `autoclicker` build: stop the old daemon
+(`autoclicker.exe quit`) and remove the old binary. The new
+`savv-autoclicker.exe` opens the GUI without arguments. A daemon left running by
+the old version is shut down automatically, and legacy autostart entries are
+removed when autostart is toggled.
+
+The CLI works the same as on Linux:
+
+```powershell
+.\savv-autoclicker.exe toggle
+.\savv-autoclicker.exe on --cps 100 --button left
+.\savv-autoclicker.exe status
+.\savv-autoclicker.exe off
+.\savv-autoclicker.exe quit
+```
 
 ## Parameters
 
@@ -422,15 +485,17 @@ The CLI works the same as on Linux:
 | `--hold-hotkey COMBO` | — | Windows and `daemon` only: hold-to-click key |
 | `--detach` | — | `daemon` only: continue in the background |
 
+Sequence mode and the point interval are configured in the GUI.
+
 Examples:
 
 ```bash
-autoclicker run --cps 20 --hold-ms 25 --jitter-pct 15
-autoclicker on --cps 200 --button left --hold-ms 2 --limit 500
-autoclicker on --cps 50 --delay-ms 2000
-autoclicker on --cps 20 --multi-click 2
-autoclicker on --cps 10 --multi-click 3 --x 640 --y 360
-autoclicker run --cps 5 --duration-secs 3
+savv-autoclicker run --cps 20 --hold-ms 25 --jitter-pct 15
+savv-autoclicker on --cps 200 --button left --hold-ms 2 --limit 500
+savv-autoclicker on --cps 50 --delay-ms 2000
+savv-autoclicker on --cps 20 --multi-click 2
+savv-autoclicker on --cps 10 --multi-click 3 --x 640 --y 360
+savv-autoclicker run --cps 5 --duration-secs 3
 ```
 
 ## How it works
@@ -446,6 +511,8 @@ autoclicker run --cps 5 --duration-secs 3
   stops itself with the reason `limit` and releases the button.
 - A multi-click pulse moves to the target point once, then sends the configured
   number of clicks with a 40 ms gap. The limit is checked after every click.
+- Sequence mode moves to each point in turn and waits for the point interval
+  between clicks, wrapping around after the last point.
 - Fixed-point clicking clamps coordinates to the 16-bit X11 range and moves the
   cursor before each pulse. Windows uses `SetCursorPos`.
 - Linux: the uinput device is removed when the process exits and the kernel
@@ -462,8 +529,9 @@ autoclicker run --cps 5 --duration-secs 3
 
 ## Limitations
 
-- Fixed-point clicking requires Windows or Linux/X11; it is unavailable on
-  native Wayland.
+- Fixed-point and sequence clicking require Windows or Linux/X11; they are
+  unavailable on native Wayland, where the eyedropper cannot read the global
+  pointer.
 - The real CPS ceiling depends on the target application and its polling rate.
 - At high CPS (hundreds of hertz) a CPU core may be busy because of the precise
   wait.
@@ -484,7 +552,7 @@ CI (`.github/workflows/ci.yml`) builds and tests the binary with the GUI on
 Manual check on Linux:
 
 ```bash
-autoclicker run --cps 5 --duration-secs 2
+savv-autoclicker run --cps 5 --duration-secs 2
 ```
 
 Point the cursor at a text editor — clicks should appear, and the button must

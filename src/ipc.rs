@@ -13,7 +13,7 @@ use interprocess::local_socket::{
 };
 
 use crate::platform;
-use crate::state::{Button, Point, Settings, SharedState};
+use crate::state::{Button, ClickMode, Point, Settings, SharedState};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_COMMAND_BYTES: u64 = 4096;
@@ -26,6 +26,33 @@ fn socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
 #[cfg(windows)]
 fn socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
     platform::pipe_name().to_ns_name::<GenericNamespaced>()
+}
+
+#[cfg(unix)]
+fn legacy_socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
+    platform::legacy_socket_path().to_fs_name::<GenericFilePath>()
+}
+
+#[cfg(windows)]
+fn legacy_socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
+    platform::legacy_pipe_name().to_ns_name::<GenericNamespaced>()
+}
+
+/// Ask a daemon from the pre-rename version to quit. The old and new
+/// versions use different sockets, so without this both could press the mouse.
+pub fn quit_legacy_daemon() {
+    let Ok(name) = legacy_socket_name() else {
+        return;
+    };
+    let Ok(mut stream) = Stream::connect(name) else {
+        return;
+    };
+    let _ = stream.set_recv_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_send_timeout(Some(Duration::from_millis(500)));
+    let _ = writeln!(stream, "QUIT");
+    let _ = stream.flush();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
 }
 
 pub fn create_listener() -> io::Result<Listener> {
@@ -55,7 +82,7 @@ pub fn connect() -> io::Result<Stream> {
 }
 
 pub fn send(command: &str) -> Result<String> {
-    let mut stream = connect().context("failed to connect to the autoclicker daemon")?;
+    let mut stream = connect().context("failed to connect to the SAVV-AutoClicker daemon")?;
     // Unix-domain sockets support timeouts; named pipes currently ignore
     // them, but keeping the call best-effort still protects the common path
     // from a wedged daemon.
@@ -109,7 +136,7 @@ pub fn send_or_spawn_with_hotkeys(
         args.push(String::from("--hold-hotkey"));
         args.push(hold_hotkey.to_string());
     }
-    platform::spawn_daemon(&args).context("failed to start the autoclicker daemon")?;
+    platform::spawn_daemon(&args).context("failed to start the SAVV-AutoClicker daemon")?;
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut last_error = None;
@@ -128,7 +155,7 @@ pub fn send_or_spawn_with_hotkeys(
         .map(|error| format!("{error:#}"))
         .unwrap_or_else(|| "timed out".to_string());
     bail!(
-        "the daemon did not become ready ({detail}); run `autoclicker daemon` in a terminal to see the error"
+        "the daemon did not become ready ({detail}); run `savv-autoclicker daemon` in a terminal to see the error"
     )
 }
 
@@ -143,7 +170,7 @@ pub fn serve(listener: Listener, shared: Arc<SharedState>) {
                 let shared = shared.clone();
                 thread::spawn(move || {
                     if let Err(error) = handle(stream, &shared) {
-                        eprintln!("autoclicker: ipc error: {error:#}");
+                        eprintln!("savv-autoclicker: ipc error: {error:#}");
                     }
                 });
             }
@@ -152,7 +179,7 @@ pub fn serve(listener: Listener, shared: Arc<SharedState>) {
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => {
-                eprintln!("autoclicker: ipc accept error: {error}");
+                eprintln!("savv-autoclicker: ipc accept error: {error}");
                 thread::sleep(Duration::from_millis(50));
             }
         }
@@ -215,10 +242,13 @@ fn process(line: &str, shared: &SharedState) -> String {
 
 fn handle_on(parts: std::str::SplitWhitespace<'_>, shared: &SharedState) -> String {
     match parse_settings(parts, "ON") {
-        Ok(settings) => {
-            shared.on(settings);
-            "OK\n".to_string()
-        }
+        Ok(settings) => match settings.readiness() {
+            Ok(()) => {
+                shared.on(settings);
+                "OK\n".to_string()
+            }
+            Err(error) => format!("ERR {error}\n"),
+        },
         Err(error) => format!("ERR {error}\n"),
     }
 }
@@ -367,31 +397,96 @@ fn parse_settings(
             .map_err(|_| "ERR invalid multi_click\n".to_string())?,
         None => 1,
     };
-    let target = match parts.next() {
-        Some(x) => {
-            let x = x
+
+    let mut mode = None;
+    let mut target = None;
+    let mut points = Vec::new();
+    let mut interval_ms = crate::state::DEFAULT_POINT_INTERVAL_MS;
+
+    if let Some(value) = parts.next() {
+        if let Some(parsed) = ClickMode::parse(value) {
+            mode = Some(parsed);
+
+            match parsed {
+                ClickMode::Cursor => {}
+                ClickMode::Point => {
+                    let (x, y) = read_point(&mut parts)?;
+                    target = Some(Point::new(x, y));
+                }
+                ClickMode::Sequence => {
+                    interval_ms = parts
+                        .next()
+                        .ok_or_else(|| "ERR sequence requires interval_ms\n".to_string())?
+                        .parse::<u32>()
+                        .map_err(|_| "ERR invalid interval_ms\n".to_string())?;
+                    let count = parts
+                        .next()
+                        .ok_or_else(|| "ERR sequence requires a point count\n".to_string())?
+                        .parse::<usize>()
+                        .map_err(|_| "ERR invalid point count\n".to_string())?;
+                    if count > crate::state::MAX_POINTS {
+                        return Err(format!(
+                            "ERR at most {} points are supported\n",
+                            crate::state::MAX_POINTS
+                        ));
+                    }
+                    for _ in 0..count {
+                        let (x, y) = read_point(&mut parts)?;
+                        points.push(Point::new(x, y));
+                    }
+                }
+            }
+        } else {
+            // Protocol 1-3 commands append the fixed point directly after
+            // `multi_click`, without an explicit mode.
+            let x = value
                 .parse::<i32>()
-                .map_err(|_| "ERR invalid target x\n".to_string())?;
+                .map_err(|_| "ERR invalid mode or target x\n".to_string())?;
             let y = parts
                 .next()
                 .ok_or_else(|| "ERR target requires both x and y\n".to_string())?
                 .parse::<i32>()
                 .map_err(|_| "ERR invalid target y\n".to_string())?;
-            Some(Point::new(x, y))
+            target = Some(Point::new(x, y));
+            mode = Some(ClickMode::Point);
         }
-        None => None,
-    };
+    }
 
     if parts.next().is_some() {
         return Err(format!("ERR too many arguments for {command}\n"));
     }
 
+    let mode = mode.unwrap_or(if target.is_some() {
+        ClickMode::Point
+    } else {
+        ClickMode::Cursor
+    });
+
     Settings::new(cps, button, hold_ms, jitter_pct)
         .and_then(|settings| settings.with_limit(limit))
         .and_then(|settings| settings.with_delay_ms(delay_ms))
         .and_then(|settings| settings.with_multi_click(multi_click))
+        .map(|settings| settings.with_mode(mode))
         .and_then(|settings| settings.with_target(target))
+        .and_then(|settings| settings.with_points(&points))
+        .and_then(|settings| settings.with_point_interval_ms(interval_ms))
         .map_err(|error| format!("ERR {error}\n"))
+}
+
+fn read_point(
+    parts: &mut std::str::SplitWhitespace<'_>,
+) -> std::result::Result<(i32, i32), String> {
+    let x = parts
+        .next()
+        .ok_or_else(|| "ERR point requires both x and y\n".to_string())?
+        .parse::<i32>()
+        .map_err(|_| "ERR invalid point x\n".to_string())?;
+    let y = parts
+        .next()
+        .ok_or_else(|| "ERR point requires both x and y\n".to_string())?
+        .parse::<i32>()
+        .map_err(|_| "ERR invalid point y\n".to_string())?;
+    Ok((x, y))
 }
 
 #[cfg(test)]
@@ -476,6 +571,52 @@ mod tests {
         let status = shared.status();
         assert_eq!(status.settings.multi_click, 3);
         assert_eq!(status.settings.target, Some(Point::new(-1920, 1080)));
+    }
+
+    #[test]
+    fn set_command_accepts_sequence_mode() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert_eq!(
+            process(
+                "SET 50 left 10 0 0 0 1 sequence 250 3 -10 20 30 -40 500 600",
+                &shared
+            ),
+            "OK\n"
+        );
+
+        let status = shared.status();
+        assert_eq!(status.settings.mode, ClickMode::Sequence);
+        assert_eq!(status.settings.point_count(), 3);
+        assert_eq!(status.settings.point_at(0), Some(Point::new(-10, 20)));
+        assert_eq!(status.settings.point_at(2), Some(Point::new(500, 600)));
+        assert!((status.settings.point_interval_ms() - 250.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn on_command_rejects_an_incomplete_sequence() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert!(process("ON 50 left 10 0 0 0 1 sequence 100 1 10 20", &shared).starts_with("ERR "));
+        assert!(!shared.status().enabled);
+
+        assert_eq!(
+            process("ON 50 left 10 0 0 0 1 sequence 100 2 10 20 30 40", &shared),
+            "OK\n"
+        );
+        assert!(shared.status().enabled);
+    }
+
+    #[test]
+    fn sequence_rejects_more_than_the_point_limit() {
+        let shared = SharedState::new(Settings::default(), false);
+        let mut command = String::from("SET 50 left 10 0 0 0 1 sequence 100 17");
+        for index in 0..17 {
+            command.push_str(&format!(" {index} {index}"));
+        }
+
+        assert!(process(&command, &shared).starts_with("ERR "));
+        assert_eq!(shared.status().settings.point_count(), 0);
     }
 
     #[test]

@@ -146,7 +146,6 @@ pub fn mix(from: Color32, to: Color32, t: f32) -> Color32 {
     from.lerp_to_gamma(to, t.clamp(0.0, 1.0))
 }
 
-#[cfg(not(windows))]
 pub fn shadow() -> Shadow {
     Shadow {
         offset: [0, 12],

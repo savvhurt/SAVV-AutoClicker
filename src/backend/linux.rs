@@ -1,4 +1,6 @@
 use std::env;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use evdev::uinput::VirtualDevice;
@@ -7,7 +9,9 @@ use evdev::{
     SynchronizationCode,
 };
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::ConnectionExt as XprotoConnectionExt;
+use x11rb::protocol::xproto::{
+    ConnectionExt as XprotoConnectionExt, KeyButMask, QueryPointerReply,
+};
 use x11rb::rust_connection::RustConnection;
 
 use crate::state::{Button, Point};
@@ -66,7 +70,7 @@ impl LinuxBackend {
             .context(
                 "cannot open /dev/uinput; make it writable for your user or install a udev rule",
             )?
-            .name("autoclicker virtual mouse")
+            .name("savv-autoclicker virtual mouse")
             .input_id(InputId::new(BusType::BUS_VIRTUAL, 0x1, 0x1, 1))
             .with_keys(&keys)?
             .with_relative_axes(&axes)?
@@ -143,6 +147,87 @@ pub fn cursor_position() -> Result<Point> {
         .reply()
         .context("failed to read the X11 cursor position")?;
     Ok(Point::new(reply.root_x as i32, reply.root_y as i32))
+}
+
+/// Wait for the next mouse click and return the pointer position. Escape
+/// cancels the capture. Only X11 is supported: Wayland does not let a normal
+/// client read the global pointer position.
+pub fn capture_point() -> Result<Option<Point>> {
+    const POLL: Duration = Duration::from_millis(8);
+    const RELEASE_WAIT: Duration = Duration::from_secs(3);
+
+    let x11 = X11::connect()?;
+    let escape = escape_keycode(&x11);
+
+    let query = || -> Result<QueryPointerReply> {
+        x11.connection
+            .query_pointer(x11.root)
+            .context("failed to query the X11 cursor")?
+            .reply()
+            .context("failed to read the X11 cursor position")
+    };
+    let any_button = |reply: &QueryPointerReply| {
+        reply
+            .mask
+            .intersects(KeyButMask::BUTTON1 | KeyButMask::BUTTON2 | KeyButMask::BUTTON3)
+    };
+
+    // The eyedropper button was clicked with the mouse; wait for the release
+    // before looking for the target click.
+    let deadline = Instant::now() + RELEASE_WAIT;
+    while any_button(&query()?) && Instant::now() < deadline {
+        thread::sleep(POLL);
+    }
+
+    loop {
+        thread::sleep(POLL);
+
+        if let Some(code) = escape {
+            let keys = x11
+                .connection
+                .query_keymap()
+                .context("failed to query the X11 keyboard")?
+                .reply()
+                .context("failed to read the X11 keyboard state")?
+                .keys;
+            let index = usize::from(code / 8);
+            if keys
+                .get(index)
+                .is_some_and(|byte| byte & (1 << (code % 8)) != 0)
+            {
+                return Ok(None);
+            }
+        }
+
+        let reply = query()?;
+        if any_button(&reply) {
+            return Ok(Some(Point::new(reply.root_x as i32, reply.root_y as i32)));
+        }
+    }
+}
+
+fn escape_keycode(x11: &X11) -> Option<u8> {
+    const XK_ESCAPE: u32 = 0xff1b;
+
+    let setup = x11.connection.setup();
+    let count = (u16::from(setup.max_keycode) - u16::from(setup.min_keycode) + 1)
+        .try_into()
+        .unwrap_or(u8::MAX);
+    let reply = x11
+        .connection
+        .get_keyboard_mapping(setup.min_keycode, count)
+        .ok()?
+        .reply()
+        .ok()?;
+    let per_keycode = usize::from(reply.keysyms_per_keycode).max(1);
+
+    for (index, keysyms) in reply.keysyms.chunks(per_keycode).enumerate() {
+        if keysyms.contains(&XK_ESCAPE) {
+            return u8::try_from(u16::from(setup.min_keycode) + index as u16).ok();
+        }
+    }
+
+    None
 }
 
 pub fn is_wayland() -> bool {

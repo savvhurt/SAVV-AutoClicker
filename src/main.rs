@@ -6,35 +6,42 @@
 use anyhow::Result;
 use clap::Parser;
 
-use autoclicker::cli::{Cli, Command};
-use autoclicker::{daemon, ipc};
+use savv_autoclicker::cli::{Cli, Command};
+use savv_autoclicker::{daemon, ipc};
 
 fn main() {
-    let has_arguments = std::env::args_os().len() > 1;
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let start_hidden = args.iter().skip(1).any(|argument| argument == "--hidden");
+    let gui_launch = args.len() == 1 || (args.len() == 2 && start_hidden);
 
     #[cfg(all(windows, feature = "gui"))]
-    if has_arguments {
+    if !gui_launch {
         windows_console::attach_for_cli();
     }
 
+    // Stop a daemon left behind by the pre-rename `autoclicker` binary. The
+    // new socket/pipe lives in a separate namespace, so without this both
+    // daemons could press the mouse at the same time.
+    ipc::quit_legacy_daemon();
+
     #[cfg(feature = "gui")]
-    if !has_arguments {
-        run_gui();
+    if gui_launch {
+        run_gui(start_hidden);
         return;
     }
 
     #[cfg(not(feature = "gui"))]
-    let _ = has_arguments;
+    let _ = (gui_launch, start_hidden);
 
     if let Err(error) = run() {
-        eprintln!("autoclicker: error: {error:#}");
+        eprintln!("savv-autoclicker: error: {error:#}");
         std::process::exit(1);
     }
 }
 
 #[cfg(feature = "gui")]
-fn run_gui() {
-    if let Err(error) = autoclicker::gui::run() {
+fn run_gui(start_hidden: bool) {
+    if let Err(error) = savv_autoclicker::gui::run(start_hidden) {
         report_error(&format!("{error:#}"));
         std::process::exit(1);
     }
@@ -46,7 +53,7 @@ fn report_error(message: &str) {
     use std::io::Write;
 
     if let Some(appdata) = std::env::var_os("APPDATA") {
-        let directory = std::path::PathBuf::from(appdata).join("autoclicker");
+        let directory = std::path::PathBuf::from(appdata).join("SAVV-AutoClicker");
         if std::fs::create_dir_all(&directory).is_ok() {
             if let Ok(mut file) = std::fs::File::create(directory.join("gui-error.log")) {
                 let _ = writeln!(file, "{message}");
@@ -58,7 +65,7 @@ fn report_error(message: &str) {
     use windows::core::HSTRING;
 
     let text = HSTRING::from(message);
-    let title = HSTRING::from("Autoclicker");
+    let title = HSTRING::from("SAVV-AutoClicker");
     unsafe {
         MessageBoxW(None, &text, &title, MB_OK | MB_ICONERROR);
     }
@@ -67,7 +74,7 @@ fn report_error(message: &str) {
 #[cfg(feature = "gui")]
 #[cfg(not(windows))]
 fn report_error(message: &str) {
-    eprintln!("autoclicker: gui error: {message}");
+    eprintln!("savv-autoclicker: gui error: {message}");
 }
 
 fn run() -> Result<()> {
@@ -82,7 +89,7 @@ fn run() -> Result<()> {
             let response = ipc::send_or_spawn("TOGGLE")?;
             ipc::ensure_ok(&response)?;
             println!(
-                "autoclicker: {}",
+                "savv-autoclicker: {}",
                 if response.contains("enabled=true") {
                     "on"
                 } else {
@@ -96,7 +103,7 @@ fn run() -> Result<()> {
             let command = args.click.to_wire_command()?;
             let response = ipc::send_or_spawn(&command)?;
             ipc::ensure_ok(&response)?;
-            println!("autoclicker: on");
+            println!("savv-autoclicker: on");
             Ok(())
         }
 
@@ -104,9 +111,9 @@ fn run() -> Result<()> {
             match ipc::send("OFF") {
                 Ok(response) => {
                     ipc::ensure_ok(&response)?;
-                    println!("autoclicker: off");
+                    println!("savv-autoclicker: off");
                 }
-                Err(_) => println!("autoclicker: not running"),
+                Err(_) => println!("savv-autoclicker: not running"),
             }
             Ok(())
         }
@@ -118,7 +125,7 @@ fn run() -> Result<()> {
                     let body = response.strip_prefix("OK\n").unwrap_or(&response);
                     print!("{body}");
                 }
-                Err(_) => println!("autoclicker: not running"),
+                Err(_) => println!("savv-autoclicker: not running"),
             }
             Ok(())
         }
@@ -127,9 +134,9 @@ fn run() -> Result<()> {
             match ipc::send("QUIT") {
                 Ok(response) => {
                     ipc::ensure_ok(&response)?;
-                    println!("autoclicker: stopped");
+                    println!("savv-autoclicker: stopped");
                 }
-                Err(_) => println!("autoclicker: not running"),
+                Err(_) => println!("savv-autoclicker: not running"),
             }
             Ok(())
         }
@@ -152,7 +159,7 @@ mod windows_console {
     use windows::core::HSTRING;
 
     pub fn attach_for_cli() {
-        // Keep explicit redirection (`autoclicker status > file.txt`, pipes,
+        // Keep explicit redirection (`savv-autoclicker status > file.txt`, pipes,
         // etc.) intact. Only fill in handles the process did not inherit.
         let stdin_valid = handle_is_valid(STD_INPUT_HANDLE);
         let stdout_valid = handle_is_valid(STD_OUTPUT_HANDLE);

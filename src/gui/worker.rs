@@ -68,7 +68,7 @@ impl Worker {
         let lang = language.resolve();
 
         let handle = thread::Builder::new()
-            .name("autoclicker-gui-ipc".to_string())
+            .name("savv-autoclicker-gui-ipc".to_string())
             .spawn(move || run(command_rx, event_tx, ctx, hotkey, hold_hotkey, lang))?;
 
         Ok(Self {
@@ -97,9 +97,9 @@ fn run(
     };
     let mut next_poll = Instant::now();
 
-    // On Windows the GUI owns the daemon: bring it up as soon as the window
-    // opens so the global hotkey is usable without pressing any button.
-    #[cfg(windows)]
+    // Bring the daemon up as soon as the window opens so clicking and the
+    // global hotkey are usable without pressing any button. On Windows the
+    // GUI owns the daemon; on Linux the daemon runs independently.
     ensure_daemon(&events, &ctx, &mut session);
 
     loop {
@@ -430,7 +430,6 @@ fn message(lang: Lang, key: Key, detail: impl std::fmt::Display) -> String {
         .replace("{}", &detail)
 }
 
-#[cfg(windows)]
 fn ensure_daemon(events: &Sender<Event>, ctx: &egui::Context, session: &mut Session) {
     match ipc::send_or_spawn_with_hotkeys(
         "STATUS",

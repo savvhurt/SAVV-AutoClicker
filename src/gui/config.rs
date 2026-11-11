@@ -7,7 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::hotkey::{DEFAULT as DEFAULT_HOTKEY, Hotkey};
 use crate::i18n::Language;
-use crate::state::{Button, Point, Settings};
+use crate::state::{Button, ClickMode, DEFAULT_POINT_INTERVAL_MS, Point, Settings};
+
+pub const MIN_UI_SCALE: f32 = 0.8;
+pub const MAX_UI_SCALE: f32 = 1.5;
+pub const UI_SCALES: [f32; 6] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -46,6 +50,8 @@ pub struct Config {
     pub hold_hotkey: String,
     pub theme: ThemeMode,
     pub language: Language,
+    pub ui_scale: f32,
+    pub minimize_to_tray: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -88,7 +94,13 @@ struct PersistedSettings {
     #[serde(default = "default_multi_click")]
     multi_click: u8,
     #[serde(default)]
+    mode: String,
+    #[serde(default)]
     target: Option<PersistedPoint>,
+    #[serde(default)]
+    points: Vec<PersistedPoint>,
+    #[serde(default = "default_point_interval")]
+    point_interval_ms: u32,
     #[serde(default = "default_hotkey")]
     hotkey: String,
     #[serde(default)]
@@ -97,6 +109,10 @@ struct PersistedSettings {
     theme: String,
     #[serde(default = "default_language")]
     language: String,
+    #[serde(default = "default_ui_scale")]
+    ui_scale: f32,
+    #[serde(default)]
+    minimize_to_tray: bool,
 }
 
 impl PersistedSettings {
@@ -109,11 +125,22 @@ impl PersistedSettings {
             limit: config.settings.limit,
             delay_ms: config.settings.delay_ms(),
             multi_click: config.settings.multi_click,
+            mode: config.settings.mode.as_str().to_string(),
             target: config.settings.target.map(PersistedPoint::from),
+            points: config
+                .settings
+                .points
+                .iter()
+                .flatten()
+                .map(|point| PersistedPoint::from(*point))
+                .collect(),
+            point_interval_ms: config.settings.point_interval_ms().round() as u32,
             hotkey: config.hotkey.clone(),
             hold_hotkey: config.hold_hotkey.clone(),
             theme: config.theme.as_str().to_string(),
             language: config.language.as_str().to_string(),
+            ui_scale: config.ui_scale,
+            minimize_to_tray: config.minimize_to_tray,
         }
     }
 }
@@ -130,6 +157,14 @@ fn default_multi_click() -> u8 {
     1
 }
 
+fn default_point_interval() -> u32 {
+    DEFAULT_POINT_INTERVAL_MS
+}
+
+fn default_ui_scale() -> f32 {
+    1.0
+}
+
 fn default_language() -> String {
     Language::Auto.as_str().to_string()
 }
@@ -141,6 +176,8 @@ pub fn load() -> Loaded {
         hold_hotkey: String::new(),
         theme: ThemeMode::Light,
         language: Language::Auto,
+        ui_scale: 1.0,
+        minimize_to_tray: false,
     };
 
     let path = match config_path() {
@@ -153,13 +190,27 @@ pub fn load() -> Loaded {
         }
     };
 
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
+    let (read_path, migrated, text) = match fs::read_to_string(&path) {
+        Ok(text) => (path.clone(), false, text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Loaded {
-                config: fallback(),
-                warning: None,
+            let Some(legacy) = legacy_config_path().filter(|legacy| legacy.exists()) else {
+                return Loaded {
+                    config: fallback(),
+                    warning: None,
+                };
             };
+            match fs::read_to_string(&legacy) {
+                Ok(text) => (legacy, true, text),
+                Err(error) => {
+                    return Loaded {
+                        config: fallback(),
+                        warning: Some(format!(
+                            "Could not read {}: {error}. Using defaults.",
+                            legacy.display()
+                        )),
+                    };
+                }
+            }
         }
         Err(error) => {
             return Loaded {
@@ -179,13 +230,16 @@ pub fn load() -> Loaded {
                 config: fallback(),
                 warning: Some(format!(
                     "Could not parse {}: {error:#}. Using defaults.",
-                    path.display()
+                    read_path.display()
                 )),
             };
         }
     };
 
     let mut warnings = Vec::new();
+    if migrated {
+        warnings.push(format!("Imported settings from {}.", read_path.display()));
+    }
 
     let settings = match parse_settings(&persisted) {
         Ok(settings) => settings,
@@ -237,6 +291,13 @@ pub fn load() -> Loaded {
         }
     };
 
+    let ui_scale = if persisted.ui_scale.is_finite() {
+        persisted.ui_scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE)
+    } else {
+        warnings.push("Invalid UI scale. Using 100%.".to_string());
+        1.0
+    };
+
     Loaded {
         config: Config {
             settings,
@@ -244,12 +305,37 @@ pub fn load() -> Loaded {
             hold_hotkey,
             theme,
             language,
+            ui_scale,
+            minimize_to_tray: persisted.minimize_to_tray,
         },
         warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
     }
 }
 
 fn parse_settings(persisted: &PersistedSettings) -> Result<Settings> {
+    let mode = if persisted.mode.trim().is_empty() {
+        if persisted.target.is_some() {
+            ClickMode::Point
+        } else {
+            ClickMode::Cursor
+        }
+    } else {
+        ClickMode::parse(&persisted.mode)
+            .ok_or_else(|| anyhow::anyhow!("unknown mode `{}`", persisted.mode))?
+    };
+
+    let points = persisted
+        .points
+        .iter()
+        .copied()
+        .map(Point::from)
+        .collect::<Vec<_>>();
+    let interval = if persisted.point_interval_ms == 0 {
+        DEFAULT_POINT_INTERVAL_MS
+    } else {
+        persisted.point_interval_ms
+    };
+
     Settings::new(
         persisted.cps,
         persisted.button.parse::<Button>()?,
@@ -259,13 +345,20 @@ fn parse_settings(persisted: &PersistedSettings) -> Result<Settings> {
     .with_limit(persisted.limit)?
     .with_delay_ms(persisted.delay_ms)?
     .with_multi_click(persisted.multi_click)?
-    .with_target(persisted.target.map(Point::from))
+    .with_mode(mode)
+    .with_target(persisted.target.map(Point::from))?
+    .with_points(&points)?
+    .with_point_interval_ms(interval)
 }
 
 pub fn config_path() -> Result<PathBuf> {
     let directory = config_directory()
         .ok_or_else(|| anyhow::anyhow!("the user configuration directory is not set"))?;
-    Ok(directory.join("autoclicker").join("gui.toml"))
+    Ok(directory.join("savv-autoclicker").join("gui.toml"))
+}
+
+fn legacy_config_path() -> Option<PathBuf> {
+    config_directory().map(|directory| directory.join("autoclicker").join("gui.toml"))
 }
 
 #[cfg(test)]
@@ -340,12 +433,17 @@ mod tests {
                 .unwrap()
                 .with_multi_click(2)
                 .unwrap()
-                .with_target(Some(Point::new(10, -20)))
+                .with_mode(ClickMode::Sequence)
+                .with_points(&[Point::new(10, -20), Point::new(30, 40)])
+                .unwrap()
+                .with_point_interval_ms(175)
                 .unwrap(),
             hotkey: "f8".to_string(),
             hold_hotkey: "alt+space".to_string(),
             theme: ThemeMode::Dark,
             language: Language::De,
+            ui_scale: 1.25,
+            minimize_to_tray: true,
         }
     }
 
@@ -360,7 +458,11 @@ mod tests {
         assert_eq!(parsed.theme, "dark");
         assert_eq!(parsed.language, "de");
         assert_eq!(parsed.multi_click, 2);
-        assert_eq!(parsed.target.map(Point::from), Some(Point::new(10, -20)));
+        assert_eq!(parsed.mode, "sequence");
+        assert_eq!(parsed.points.len(), 2);
+        assert_eq!(parsed.point_interval_ms, 175);
+        assert!((parsed.ui_scale - 1.25).abs() < 1e-6);
+        assert!(parsed.minimize_to_tray);
         assert!(!text.contains("profiles"));
         assert!(!text.contains("active_profile"));
 
@@ -368,7 +470,10 @@ mod tests {
         assert_eq!(settings.limit, 500);
         assert!((settings.delay_ms() - 250.0).abs() < 1e-9);
         assert_eq!(settings.multi_click, 2);
-        assert_eq!(settings.target, Some(Point::new(10, -20)));
+        assert_eq!(settings.mode, ClickMode::Sequence);
+        assert_eq!(settings.point_count(), 2);
+        assert_eq!(settings.point_at(0), Some(Point::new(10, -20)));
+        assert!((settings.point_interval_ms() - 175.0).abs() < 1e-9);
     }
 
     #[test]
@@ -378,7 +483,19 @@ mod tests {
         assert_eq!(settings.limit, 0);
         assert_eq!(settings.delay_ms(), 0.0);
         assert_eq!(settings.multi_click, 1);
+        assert_eq!(settings.mode, ClickMode::Cursor);
         assert_eq!(settings.target, None);
+        assert_eq!(settings.point_count(), 0);
+    }
+
+    #[test]
+    fn legacy_target_without_mode_becomes_point_mode() {
+        let settings = parse(
+            "cps = 50\nbutton = \"left\"\nhold_ms = 10\njitter_pct = 0\ntarget = { x = 5, y = -6 }\n",
+        )
+        .unwrap();
+        assert_eq!(settings.mode, ClickMode::Point);
+        assert_eq!(settings.target, Some(Point::new(5, -6)));
     }
 
     #[test]

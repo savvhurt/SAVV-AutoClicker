@@ -1,4 +1,4 @@
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -7,12 +7,15 @@ use egui::{
 };
 use egui_software_backend::{SoftwareBackend, SoftwareBackendAppConfiguration};
 
-use super::config::{self, ThemeMode};
+use super::config::{self, MAX_UI_SCALE, MIN_UI_SCALE, ThemeMode, UI_SCALES};
 use super::worker::{Command, Event, Worker};
 use super::{theme, widgets};
 
 use crate::i18n::{self, Key, Lang, Language};
-use crate::state::{Button, MAX_DELAY_MS, MAX_LIMIT, Point, Settings, Status, StopReason};
+use crate::state::{
+    Button, ClickMode, MAX_DELAY_MS, MAX_LIMIT, MAX_POINT_INTERVAL_MS, MAX_POINTS, Point, Settings,
+    Status, StopReason,
+};
 
 const APPLY_DEBOUNCE: Duration = Duration::from_millis(250);
 const SYNC_GRACE: Duration = Duration::from_millis(800);
@@ -22,7 +25,7 @@ const WINDOW_SIZE: [f32; 2] = [460.0, 560.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [420.0, 520.0];
 const LABEL_WIDTH: f32 = 90.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Tab {
     Clicks,
     Mode,
@@ -35,6 +38,18 @@ enum Tab {
 enum RecordTarget {
     Toggle,
     Hold,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PipetteTarget {
+    Point,
+    Sequence(usize),
+    NewSequence,
+}
+
+struct Pipette {
+    target: PipetteTarget,
+    receiver: Receiver<std::result::Result<Option<Point>, String>>,
 }
 
 struct SliderSpec<'a> {
@@ -54,7 +69,10 @@ struct DraftSettings {
     limit: u64,
     delay_ms: f64,
     multi_click: u8,
+    mode: ClickMode,
     target: Option<Point>,
+    points: [Option<Point>; MAX_POINTS],
+    point_interval_ms: f64,
 }
 
 impl From<Settings> for DraftSettings {
@@ -67,18 +85,68 @@ impl From<Settings> for DraftSettings {
             limit: settings.limit,
             delay_ms: settings.delay_ms(),
             multi_click: settings.multi_click,
+            mode: settings.mode,
             target: settings.target,
+            points: settings.points,
+            point_interval_ms: settings.point_interval_ms(),
         }
     }
 }
 
 impl DraftSettings {
+    fn points_vec(&self) -> Vec<Point> {
+        self.points.iter().flatten().copied().collect()
+    }
+
+    fn point_count(&self) -> usize {
+        self.points.iter().flatten().count()
+    }
+
+    fn point_at(&self, index: usize) -> Option<Point> {
+        self.points.iter().flatten().nth(index).copied()
+    }
+
+    fn set_point(&mut self, index: usize, point: Point) {
+        for (current, existing) in self.points.iter_mut().flatten().enumerate() {
+            if current == index {
+                *existing = point;
+                return;
+            }
+        }
+    }
+
+    fn add_point(&mut self, point: Point) -> Option<usize> {
+        let slot = self.points.iter_mut().find(|slot| slot.is_none())?;
+        *slot = Some(point);
+        Some(self.point_count() - 1)
+    }
+
+    fn remove_point(&mut self, index: usize) {
+        let mut points = self.points_vec();
+        if index < points.len() {
+            points.remove(index);
+        }
+        self.points = [None; MAX_POINTS];
+        for (slot, point) in self.points.iter_mut().zip(points) {
+            *slot = Some(point);
+        }
+    }
+
     fn to_settings(self) -> Result<Settings, String> {
+        let points = self.points_vec();
+        let interval = self
+            .point_interval_ms
+            .round()
+            .clamp(1.0, MAX_POINT_INTERVAL_MS as f64) as u32;
+
         Settings::new(self.cps, self.button, self.hold_ms, self.jitter_pct)
             .and_then(|settings| settings.with_limit(self.limit))
             .and_then(|settings| settings.with_delay_ms(self.delay_ms))
             .and_then(|settings| settings.with_multi_click(self.multi_click))
+            .map(|settings| settings.with_mode(self.mode))
             .and_then(|settings| settings.with_target(self.target))
+            .and_then(|settings| settings.with_points(&points))
+            .and_then(|settings| settings.with_point_interval_ms(interval))
             .map_err(|error| format!("{error:#}"))
     }
 }
@@ -92,6 +160,17 @@ pub struct GuiApp {
     theme_mode: ThemeMode,
     language: Language,
     lang: Lang,
+    ui_scale: f32,
+    applied_scale: Option<f32>,
+    minimize_to_tray: bool,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    start_hidden: bool,
+    #[cfg(windows)]
+    elevated: bool,
+    #[cfg(windows)]
+    tray: Option<super::tray::Tray>,
+    pipette: Option<Pipette>,
+    confirm_defaults: bool,
     autostart_enabled: bool,
     online: bool,
     enabled: bool,
@@ -130,21 +209,22 @@ pub struct GuiApp {
 }
 
 impl GuiApp {
-    fn new(ctx: egui::Context) -> Self {
+    fn new(ctx: egui::Context, start_hidden: bool) -> Self {
         let loaded = config::load();
         let config = loaded.config;
         let lang = config.language.resolve();
         theme::install(&ctx, config.theme);
         let worker = Worker::spawn(
-            ctx,
+            ctx.clone(),
             config.hotkey.clone(),
             config.hold_hotkey.clone(),
             config.language,
         )
-        .expect("failed to start the autoclicker GUI IPC worker");
+        .expect("failed to start the SAVV-AutoClicker GUI IPC worker");
         let autostart_enabled = crate::autostart::is_enabled();
 
-        Self {
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut app = Self {
             settings: config.settings.into(),
             tab: Tab::Clicks,
             hotkey: config.hotkey,
@@ -153,6 +233,16 @@ impl GuiApp {
             theme_mode: config.theme,
             language: config.language,
             lang,
+            ui_scale: config.ui_scale,
+            applied_scale: None,
+            minimize_to_tray: config.minimize_to_tray,
+            start_hidden,
+            #[cfg(windows)]
+            elevated: crate::platform::is_elevated(),
+            #[cfg(windows)]
+            tray: None,
+            pipette: None,
+            confirm_defaults: false,
             autostart_enabled,
             online: false,
             enabled: false,
@@ -185,7 +275,28 @@ impl GuiApp {
             commands: worker.commands,
             events: worker.events,
             worker: worker.handle,
+        };
+
+        #[cfg(windows)]
+        {
+            // Start the icon before the first frame: an autostart launch can be
+            // hidden, and a hidden winit window does not necessarily receive a
+            // natural redraw that would otherwise create the icon.
+            app.sync_tray(&ctx);
+            if app.start_hidden {
+                ctx.request_repaint();
+            }
+
+            if !app.elevated {
+                let warning = app.t(Key::ElevationWarn).to_string();
+                app.notice = Some(match app.notice.take() {
+                    Some(existing) => format!("{existing}\n{warning}"),
+                    None => warning,
+                });
+            }
         }
+
+        app
     }
 
     fn t(&self, key: Key) -> &'static str {
@@ -422,6 +533,8 @@ impl GuiApp {
                 hold_hotkey: self.hold_hotkey.clone(),
                 theme: self.theme_mode,
                 language: self.language,
+                ui_scale: self.ui_scale,
+                minimize_to_tray: self.minimize_to_tray,
             })
     }
 
@@ -453,8 +566,163 @@ impl GuiApp {
     fn set_language(&mut self, language: Language) {
         self.language = language;
         self.lang = language.resolve();
+        #[cfg(windows)]
+        super::tray::set_language(self.lang);
         let _ = self.commands.send(Command::SetLanguage(language));
         self.save_config();
+    }
+
+    fn apply_ui_scale(&mut self, ctx: &egui::Context) {
+        let scale = self.ui_scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE);
+        self.ui_scale = scale;
+        ctx.set_zoom_factor(scale);
+
+        // The software backend sizes the window in logical points. Scale the
+        // outer window as well so the layout keeps its designed size.
+        if self.applied_scale != Some(scale) {
+            self.applied_scale = Some(scale);
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(
+                MIN_WINDOW_SIZE[0] * scale,
+                MIN_WINDOW_SIZE[1] * scale,
+            )));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
+                WINDOW_SIZE[0] * scale,
+                WINDOW_SIZE[1] * scale,
+            )));
+        }
+    }
+
+    fn start_pipette(&mut self, target: PipetteTarget) {
+        if self.pipette.is_some() {
+            return;
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        let spawned = thread::Builder::new()
+            .name("savv-autoclicker-pipette".to_string())
+            .spawn(move || {
+                let result = crate::backend::capture_point().map_err(|error| format!("{error:#}"));
+                let _ = sender.send(result);
+            });
+
+        match spawned {
+            Ok(_) => {
+                self.pipette = Some(Pipette { target, receiver });
+                self.notice = Some(self.t(Key::PickWaiting).to_string());
+            }
+            Err(error) => {
+                self.notice = Some(self.fill(Key::PickFailed, &[format!("{error:#}")]));
+            }
+        }
+    }
+
+    fn poll_pipette(&mut self, ctx: &egui::Context) {
+        let (target, result) = match self.pipette.as_ref() {
+            Some(pipette) => (pipette.target, pipette.receiver.try_recv()),
+            None => return,
+        };
+
+        match result {
+            Ok(Ok(Some(point))) => {
+                self.pipette = None;
+                match target {
+                    PipetteTarget::Point => {
+                        self.settings.mode = ClickMode::Point;
+                        self.settings.target = Some(point);
+                    }
+                    PipetteTarget::Sequence(index) => {
+                        self.settings.set_point(index, point);
+                    }
+                    PipetteTarget::NewSequence => {
+                        if self.settings.add_point(point).is_none() {
+                            self.notice = Some(self.t(Key::PointsFull).to_string());
+                        }
+                    }
+                }
+                self.mark_dirty();
+                self.notice = Some(self.fill(
+                    Key::CurrentPicked,
+                    &[point.x.to_string(), point.y.to_string()],
+                ));
+            }
+            Ok(Ok(None)) => {
+                self.pipette = None;
+                self.notice = Some(self.t(Key::PickCancelled).to_string());
+            }
+            Ok(Err(error)) => {
+                self.pipette = None;
+                self.notice = Some(self.fill(Key::PickFailed, &[error]));
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.pipette = None;
+                self.notice = Some(self.t(Key::PickCancelled).to_string());
+            }
+        }
+    }
+
+    fn add_sequence_point(&mut self) {
+        if self.settings.point_count() >= MAX_POINTS {
+            self.notice = Some(self.t(Key::PointsFull).to_string());
+            return;
+        }
+
+        self.start_pipette(PipetteTarget::NewSequence);
+    }
+
+    fn restore_defaults(&mut self, ctx: &egui::Context) {
+        let defaults = Settings::default();
+        self.settings = defaults.into();
+        self.pipette = None;
+        self.recording = None;
+        self.hotkey = crate::hotkey::DEFAULT.to_string();
+        self.hold_hotkey.clear();
+        self.theme_mode = ThemeMode::Light;
+        theme::set_mode(ctx, self.theme_mode);
+        self.language = Language::Auto;
+        self.lang = self.language.resolve();
+        self.ui_scale = 1.0;
+        self.apply_ui_scale(ctx);
+        self.daemon_hotkey_error = None;
+        self.last_hotkey_sync = Some(Instant::now());
+        self.last_hold_hotkey_sync = Some(Instant::now());
+        let _ = self.commands.send(Command::SetLanguage(self.language));
+        let _ = self.commands.send(Command::SetHotkey(self.hotkey.clone()));
+        let _ = self.commands.send(Command::SetHoldHotkey(String::new()));
+        #[cfg(windows)]
+        super::tray::set_language(self.lang);
+        self.mark_dirty();
+        self.flush_settings();
+        self.notice = Some(self.t(Key::DefaultsDone).to_string());
+    }
+
+    #[cfg(windows)]
+    fn sync_tray(&mut self, ctx: &egui::Context) {
+        if self.minimize_to_tray {
+            if self.tray.is_none() {
+                match super::tray::Tray::start(ctx.clone(), self.lang) {
+                    Ok(tray) => self.tray = Some(tray),
+                    Err(error) => {
+                        self.minimize_to_tray = false;
+                        self.notice = Some(self.fill(Key::TrayFailed, &[format!("{error:#}")]));
+                        self.save_config();
+                    }
+                }
+            }
+        } else {
+            self.tray = None;
+        }
+    }
+
+    #[cfg(windows)]
+    fn handle_minimize(&mut self, ctx: &egui::Context) {
+        let minimized = ctx.input(|input| input.viewport().minimized.unwrap_or(false));
+        if minimized && self.minimize_to_tray && self.tray.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        }
     }
 
     #[cfg(windows)]
@@ -663,7 +931,7 @@ impl GuiApp {
                 .rect_filled(mark, CornerRadius::same(2), theme::accent());
 
             ui.label(
-                RichText::new("Autoclicker")
+                RichText::new("SAVV-AutoClicker")
                     .font(theme::sans_semibold(16.0))
                     .color(theme::text()),
             );
@@ -729,6 +997,11 @@ impl GuiApp {
                         group_digits(self.session_clicks),
                         group_digits(self.settings.limit),
                     ],
+                )
+            } else if self.settings.mode == ClickMode::Sequence {
+                self.fill(
+                    Key::HeroSequenceClicks,
+                    &[self.settings.point_count().to_string()],
                 )
             } else if self.settings.target.is_some() {
                 self.t(Key::HeroTargetClicks).to_string()
@@ -904,19 +1177,31 @@ impl GuiApp {
         let mut draft = self.settings;
         let mut changed = false;
 
-        changed |= compact_slider_row(
-            ui,
-            self.t(Key::RowSpeed),
-            self.t(Key::HintSpeed),
-            &mut draft.cps,
-            SliderSpec {
-                range: 0.2..=1000.0,
-                logarithmic: true,
-                step: 0.1,
-                decimals: 1,
-                suffix: "CPS",
-            },
-        );
+        if draft.mode == ClickMode::Sequence {
+            ui.add_space(2.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(self.t(Key::SequenceSpeedHint))
+                        .font(theme::sans(9.5))
+                        .color(theme::dim()),
+                )
+                .wrap(),
+            );
+        } else {
+            changed |= compact_slider_row(
+                ui,
+                self.t(Key::RowSpeed),
+                self.t(Key::HintSpeed),
+                &mut draft.cps,
+                SliderSpec {
+                    range: 0.2..=1000.0,
+                    logarithmic: true,
+                    step: 0.1,
+                    decimals: 1,
+                    suffix: "CPS",
+                },
+            );
+        }
 
         theme::rule(ui);
 
@@ -994,7 +1279,10 @@ impl GuiApp {
             },
         );
 
-        let period_ms = 1000.0 / draft.cps.max(0.2);
+        let period_ms = match draft.mode {
+            ClickMode::Sequence => draft.point_interval_ms,
+            ClickMode::Cursor | ClickMode::Point => 1000.0 / draft.cps.max(0.2),
+        };
         let effective_hold = draft.hold_ms.min((period_ms - 0.2).max(0.1));
         let hint = if draft.hold_ms > effective_hold + 0.001 {
             (
@@ -1028,88 +1316,215 @@ impl GuiApp {
         };
         let mut draft = self.settings;
         let mut changed = false;
+        let mut pipette_target = None;
+        let mut add_point = false;
+        let mut remove_point = None;
 
-        let mut point_mode = draft.target.is_some();
-        let target_changed =
+        let mut mode = draft.mode;
+        let mode_changed =
             compact_choice_row(ui, self.t(Key::RowTarget), self.t(Key::HintTarget), |ui| {
                 widgets::segmented(
                     ui,
-                    "click_target",
-                    &mut point_mode,
+                    "click_mode",
+                    &mut mode,
                     &[
-                        (false, self.t(Key::TargetCursor)),
-                        (true, self.t(Key::TargetPoint)),
+                        (ClickMode::Cursor, self.t(Key::TargetCursor)),
+                        (ClickMode::Point, self.t(Key::TargetPoint)),
+                        (ClickMode::Sequence, self.t(Key::TargetSequence)),
                     ],
                 )
             });
-        if target_changed {
-            draft.target = if point_mode {
-                Some(crate::backend::cursor_position().unwrap_or(Point::new(0, 0)))
-            } else {
-                None
-            };
+        if mode_changed {
+            match mode {
+                ClickMode::Point if draft.target.is_none() => {
+                    draft.target = crate::backend::cursor_position().ok();
+                }
+                ClickMode::Sequence if draft.point_count() == 0 => {
+                    // Leave the list empty: the user adds points with the
+                    // eyedropper, and readiness asks for two before starting.
+                }
+                _ => {}
+            }
+            draft.mode = mode;
             changed = true;
         }
 
         let blocked = self.target_blocked_reason();
-        if let Some(reason) = blocked {
-            ui.add_space(2.0);
-            ui.add(
-                egui::Label::new(
-                    RichText::new(self.t(reason))
-                        .font(theme::sans(9.5))
-                        .color(theme::warning()),
-                )
-                .wrap(),
-            );
+        if blocked.is_some() && draft.mode != ClickMode::Cursor {
+            if let Some(reason) = blocked {
+                ui.add_space(2.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(self.t(reason))
+                            .font(theme::sans(9.5))
+                            .color(theme::warning()),
+                    )
+                    .wrap(),
+                );
+            }
         }
 
-        if let Some(point) = &mut draft.target {
+        if draft.mode == ClickMode::Point && draft.target.is_none() {
+            draft.target = Some(crate::backend::cursor_position().unwrap_or(Point::new(0, 0)));
+            changed = true;
+        }
+
+        if draft.mode == ClickMode::Sequence {
             theme::rule(ui);
-            let mut pick = false;
+            changed |= compact_slider_row(
+                ui,
+                self.t(Key::RowInterval),
+                self.t(Key::HintInterval),
+                &mut draft.point_interval_ms,
+                SliderSpec {
+                    range: 1.0..=MAX_POINT_INTERVAL_MS as f64,
+                    logarithmic: false,
+                    step: 1.0,
+                    decimals: 0,
+                    suffix: self.t(Key::UnitMs),
+                },
+            );
+
+            theme::rule(ui);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                let _ = row_label(ui, self.t(Key::RowCoords), self.t(Key::HintCoords), 20.0);
+                let _ = row_label(ui, self.t(Key::RowPoints), self.t(Key::HintPoints), 22.0);
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if widgets::text_button(
-                        ui,
-                        self.t(Key::PickCurrent),
-                        theme::muted(),
-                        theme::accent(),
-                    )
-                    .clicked()
-                    {
-                        pick = true;
-                    }
-                    let remaining = ui.available_width();
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(remaining, 18.0),
-                        Layout::left_to_right(Align::Center),
-                        |ui| {
-                            changed |= widgets::coordinate_field(ui, &mut point.x, "X");
-                            changed |= widgets::coordinate_field(ui, &mut point.y, "Y");
-                        },
+                    let enabled = draft.point_count() < MAX_POINTS;
+                    ui.add_enabled_ui(enabled, |ui| {
+                        if widgets::text_button(
+                            ui,
+                            self.t(Key::AddPoint),
+                            theme::muted(),
+                            theme::accent(),
+                        )
+                        .clicked()
+                        {
+                            add_point = true;
+                        }
+                    });
+                    ui.label(
+                        RichText::new(format!("{} / {}", draft.point_count(), MAX_POINTS))
+                            .font(theme::mono(8.5))
+                            .color(theme::dim()),
                     );
                 });
             });
 
-            if pick {
-                match crate::backend::cursor_position() {
-                    Ok(position) => {
-                        point.x = position.x;
-                        point.y = position.y;
-                        changed = true;
-                        self.notice = Some(self.fill(
-                            Key::CurrentPicked,
-                            &[position.x.to_string(), position.y.to_string()],
-                        ));
-                    }
-                    Err(error) => {
-                        self.notice = Some(self.fill(Key::PickFailed, &[format!("{error:#}")]));
-                    }
+            if draft.point_count() == 0 {
+                ui.add_space(2.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(self.t(Key::PointsEmpty))
+                            .font(theme::sans(9.5))
+                            .color(theme::muted()),
+                    )
+                    .wrap(),
+                );
+            }
+
+            for index in 0..draft.point_count() {
+                let Some(mut point) = draft.point_at(index) else {
+                    continue;
+                };
+                let active = self
+                    .pipette
+                    .as_ref()
+                    .is_some_and(|pipette| pipette.target == PipetteTarget::Sequence(index));
+
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.label(
+                        RichText::new(format!("{:02}", index + 1))
+                            .font(theme::mono_medium(9.0))
+                            .color(if active {
+                                theme::accent()
+                            } else {
+                                theme::dim()
+                            }),
+                    );
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add_enabled_ui(blocked.is_none(), |ui| {
+                            let response = widgets::pipette_button(ui, active);
+                            let response = response.on_hover_text(self.t(Key::PickHint));
+                            if response.clicked() {
+                                pipette_target = Some(PipetteTarget::Sequence(index));
+                            }
+                        });
+                        if widgets::text_button(ui, "×", theme::dim(), theme::danger())
+                            .on_hover_text(self.t(Key::RemovePoint))
+                            .clicked()
+                        {
+                            remove_point = Some(index);
+                        }
+
+                        let remaining = ui.available_width();
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(remaining, 18.0),
+                            Layout::left_to_right(Align::Center),
+                            |ui| {
+                                changed |= widgets::coordinate_field(ui, &mut point.x, "X");
+                                changed |= widgets::coordinate_field(ui, &mut point.y, "Y");
+                            },
+                        );
+                    });
+                });
+
+                if point != draft.point_at(index).unwrap_or(point) {
+                    draft.set_point(index, point);
+                    changed = true;
                 }
             }
+        } else if draft.mode == ClickMode::Point {
+            if let Some(point) = &mut draft.target {
+                theme::rule(ui);
+                let active = self
+                    .pipette
+                    .as_ref()
+                    .is_some_and(|pipette| pipette.target == PipetteTarget::Point);
+                let mut point_value = *point;
+
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let _ = row_label(ui, self.t(Key::RowCoords), self.t(Key::HintCoords), 20.0);
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add_enabled_ui(blocked.is_none(), |ui| {
+                            let response = widgets::pipette_button(ui, active);
+                            let response = response.on_hover_text(self.t(Key::PickHint));
+                            if response.clicked() {
+                                pipette_target = Some(PipetteTarget::Point);
+                            }
+                        });
+                        let remaining = ui.available_width();
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(remaining, 18.0),
+                            Layout::left_to_right(Align::Center),
+                            |ui| {
+                                changed |= widgets::coordinate_field(ui, &mut point_value.x, "X");
+                                changed |= widgets::coordinate_field(ui, &mut point_value.y, "Y");
+                            },
+                        );
+                    });
+                });
+
+                if point_value != *point {
+                    *point = point_value;
+                    changed = true;
+                }
+            }
+        } else {
+            ui.add_space(3.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(self.t(Key::CursorModeHint))
+                        .font(theme::sans(9.5))
+                        .color(theme::dim()),
+                )
+                .wrap(),
+            );
         }
 
         theme::rule(ui);
@@ -1143,9 +1558,27 @@ impl GuiApp {
             .wrap(),
         );
 
+        if let Some(index) = remove_point {
+            draft.remove_point(index);
+            changed = true;
+            if self
+                .pipette
+                .as_ref()
+                .is_some_and(|pipette| pipette.target == PipetteTarget::Sequence(index))
+            {
+                self.pipette = None;
+            }
+        }
+
         if changed {
             self.settings = draft;
             self.mark_dirty();
+        }
+
+        if add_point {
+            self.add_sequence_point();
+        } else if let Some(target) = pipette_target {
+            self.start_pipette(target);
         }
     }
 
@@ -1199,6 +1632,35 @@ impl GuiApp {
 
         theme::rule(ui);
 
+        let mut scale = self.ui_scale;
+        let _ = compact_choice_row(
+            ui,
+            self.t(Key::RowUiScale),
+            self.t(Key::HintUiScale),
+            |ui| {
+                egui::ComboBox::from_id_salt("ui_scale")
+                    .width(ui.available_width().min(120.0))
+                    .selected_text(format!("{:.0}%", scale * 100.0))
+                    .show_ui(ui, |ui| {
+                        for preset in UI_SCALES {
+                            ui.selectable_value(
+                                &mut scale,
+                                preset,
+                                format!("{:.0}%", preset * 100.0),
+                            );
+                        }
+                    });
+                false
+            },
+        );
+        if (scale - self.ui_scale).abs() > f32::EPSILON {
+            self.ui_scale = scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE);
+            self.apply_ui_scale(ui.ctx());
+            self.save_config();
+        }
+
+        theme::rule(ui);
+
         if crate::autostart::SUPPORTED {
             let mut enabled = self.autostart_enabled;
             let changed = compact_choice_row(
@@ -1206,17 +1668,14 @@ impl GuiApp {
                 self.t(Key::RowAutostart),
                 self.t(Key::HintAutostart),
                 |ui| {
-                    widgets::segmented(
-                        ui,
-                        "autostart",
-                        &mut enabled,
-                        &[(false, self.t(Key::Disabled)), (true, self.t(Key::Enabled))],
-                    )
+                    ui.checkbox(&mut enabled, self.t(Key::Enabled));
+                    enabled != self.autostart_enabled
                 },
             );
 
             if changed && enabled != self.autostart_enabled {
-                match crate::autostart::set_enabled(enabled) {
+                let start_hidden = enabled && self.minimize_to_tray;
+                match crate::autostart::set_enabled(enabled, start_hidden) {
                     Ok(()) => {
                         self.autostart_enabled = enabled;
                         self.notice = Some(
@@ -1260,6 +1719,167 @@ impl GuiApp {
                 )
                 .wrap(),
             );
+        }
+
+        #[cfg(windows)]
+        {
+            theme::rule(ui);
+            let mut tray = self.minimize_to_tray;
+            let changed = compact_choice_row(
+                ui,
+                self.t(Key::RowMinimizeTray),
+                self.t(Key::HintMinimizeTray),
+                |ui| {
+                    ui.checkbox(&mut tray, self.t(Key::Enabled));
+                    tray != self.minimize_to_tray
+                },
+            );
+            if changed {
+                self.minimize_to_tray = tray;
+                self.sync_tray(ui.ctx());
+                if self.autostart_enabled {
+                    // Keep the autostart entry in sync with the new tray
+                    // preference, otherwise it would open a hidden window
+                    // without a tray icon (or show a window unexpectedly).
+                    let _ = crate::autostart::set_enabled(true, tray);
+                }
+                self.save_config();
+            }
+
+            ui.add_space(3.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(self.t(Key::HintMinimizeTray))
+                        .font(theme::sans(9.5))
+                        .color(theme::dim()),
+                )
+                .wrap(),
+            );
+
+            if !self.elevated {
+                theme::rule(ui);
+                ui.add_space(2.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(self.t(Key::ElevationWarn))
+                            .font(theme::sans(9.5))
+                            .color(theme::warning()),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(3.0);
+                if widgets::text_button(
+                    ui,
+                    self.t(Key::ElevationRestart),
+                    theme::accent(),
+                    theme::accent(),
+                )
+                .clicked()
+                {
+                    match crate::platform::restart_elevated() {
+                        Ok(()) => {
+                            self.notice = Some(self.t(Key::ElevationRestarting).to_string());
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        Err(error) => {
+                            self.notice =
+                                Some(self.fill(Key::ElevationFailed, &[format!("{error:#}")]));
+                        }
+                    }
+                }
+            }
+        }
+
+        theme::rule(ui);
+        ui.add_space(2.0);
+        if widgets::text_button(
+            ui,
+            self.t(Key::DefaultsButton),
+            theme::muted(),
+            theme::danger(),
+        )
+        .clicked()
+        {
+            self.confirm_defaults = true;
+        }
+    }
+
+    fn draw_defaults_confirmation(&mut self, ctx: &egui::Context) {
+        if !self.confirm_defaults {
+            return;
+        }
+
+        let mut close = false;
+        let mut restore = false;
+
+        let modal = egui::Modal::new(egui::Id::new("restore_defaults"))
+            .backdrop_color(Color32::from_black_alpha(120))
+            .frame(
+                Frame::new()
+                    .fill(theme::panel())
+                    .stroke(Stroke::new(1.0_f32, theme::line()))
+                    .corner_radius(CornerRadius::same(16))
+                    .inner_margin(Margin::same(24))
+                    .shadow(theme::shadow()),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.label(
+                    RichText::new(self.t(Key::DefaultsTitle))
+                        .font(theme::mono_medium(8.5))
+                        .color(theme::dim()),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(self.t(Key::DefaultsQuestion))
+                        .font(theme::sans_semibold(22.0))
+                        .color(theme::text()),
+                );
+                ui.add_space(8.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(self.t(Key::DefaultsText))
+                            .font(theme::sans(12.0))
+                            .color(theme::muted()),
+                    )
+                    .wrap(),
+                );
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if widgets::text_button(
+                            ui,
+                            self.t(Key::DefaultsConfirm),
+                            theme::danger(),
+                            theme::danger(),
+                        )
+                        .clicked()
+                        {
+                            restore = true;
+                        }
+                        if widgets::text_button(
+                            ui,
+                            self.t(Key::Cancel),
+                            theme::muted(),
+                            theme::text(),
+                        )
+                        .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                });
+            });
+
+        if modal.should_close() {
+            close = true;
+        }
+
+        if restore {
+            self.confirm_defaults = false;
+            self.restore_defaults(ctx);
+        } else if close {
+            self.confirm_defaults = false;
         }
     }
 
@@ -1436,7 +2056,7 @@ impl GuiApp {
     fn toggle_bind(&self) -> String {
         let executable = std::env::current_exe()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|_| "autoclicker".to_string());
+            .unwrap_or_else(|_| "savv-autoclicker".to_string());
         let executable = executable.replace('"', "\\\"");
         format!("Mod+Alt+C {{ spawn \"{executable}\" \"toggle\"; }}")
     }
@@ -1587,6 +2207,23 @@ impl egui_software_backend::App for GuiApp {
             self.save_config();
         }
 
+        self.apply_ui_scale(ui.ctx());
+        #[cfg(windows)]
+        self.sync_tray(ui.ctx());
+        #[cfg(windows)]
+        if self.start_hidden {
+            // If the tray icon could not be created, never leave the app
+            // running without any window to interact with.
+            self.start_hidden = false;
+            if self.tray.is_none() {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            }
+        }
+        self.poll_pipette(ui.ctx());
+        #[cfg(windows)]
+        self.handle_minimize(ui.ctx());
+
         self.capture_hotkey(ui.ctx());
         self.drain_events(ui.ctx());
         self.maybe_apply_settings();
@@ -1628,21 +2265,27 @@ impl egui_software_backend::App for GuiApp {
                     self.draw_tabs(ui);
                     ui.add_space(3.0);
 
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(ui.available_width(), ui.available_height()),
-                        Layout::top_down(Align::LEFT),
-                        |ui| match self.tab {
-                            Tab::Clicks => self.draw_clicks_tab(ui),
-                            Tab::Mode => self.draw_mode_tab(ui),
-                            Tab::Hotkeys => self.draw_hotkeys_tab(ui),
-                            Tab::System => self.draw_system_tab(ui),
-                        },
-                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt(("tab_scroll", self.tab))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(ui.available_width(), ui.available_height()),
+                                Layout::top_down(Align::LEFT),
+                                |ui| match self.tab {
+                                    Tab::Clicks => self.draw_clicks_tab(ui),
+                                    Tab::Mode => self.draw_mode_tab(ui),
+                                    Tab::Hotkeys => self.draw_hotkeys_tab(ui),
+                                    Tab::System => self.draw_system_tab(ui),
+                                },
+                            );
+                        });
                 });
             });
 
         #[cfg(not(windows))]
         self.draw_quit_confirmation(ui.ctx());
+        self.draw_defaults_confirmation(ui.ctx());
 
         // The debounce needs its own wake-up: the software backend waits for
         // events, so an idle window would otherwise not apply or save the
@@ -1667,12 +2310,18 @@ impl Drop for GuiApp {
     }
 }
 
-pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(start_hidden: bool) -> Result<(), Box<dyn std::error::Error>> {
+    // A hidden start only makes sense together with a tray icon; the config is
+    // read again by the app, but the visibility has to be known before the
+    // window is created.
+    let start_hidden = start_hidden && cfg!(windows) && config::load().config.minimize_to_tray;
+
     let mut viewport = egui::ViewportBuilder::default()
-        .with_app_id("autoclicker")
+        .with_app_id("savv-autoclicker")
         .with_inner_size(WINDOW_SIZE)
         .with_min_inner_size(MIN_WINDOW_SIZE)
-        .with_title("Autoclicker");
+        .with_title("SAVV-AutoClicker")
+        .with_visible(!start_hidden);
 
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(icon);
@@ -1680,12 +2329,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = SoftwareBackendAppConfiguration::new().viewport_builder(viewport);
 
-    egui_software_backend::run_app_with_software_backend(config, GuiApp::new)
-        .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+    egui_software_backend::run_app_with_software_backend(config, move |ctx| {
+        GuiApp::new(ctx, start_hidden)
+    })
+    .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
 }
 
 fn load_icon() -> Option<egui::IconData> {
-    let bytes = include_bytes!("../../assets/icon/autoclicker-256.png");
+    let bytes = include_bytes!("../../assets/icon/savv-autoclicker-256.png");
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder.read_info().ok()?;
     let mut buffer = vec![0; reader.output_buffer_size()?];
@@ -1918,7 +2569,10 @@ fn settings_equivalent(left: &Settings, right: &Settings) -> bool {
     left.button == right.button
         && left.limit == right.limit
         && left.multi_click == right.multi_click
+        && left.mode == right.mode
         && left.target == right.target
+        && left.points == right.points
+        && left.point_interval == right.point_interval
         && (left.cps - right.cps).abs() < 0.001
         && (left.hold_ms() - right.hold_ms()).abs() < 0.001
         && (left.jitter_pct - right.jitter_pct).abs() < 0.001

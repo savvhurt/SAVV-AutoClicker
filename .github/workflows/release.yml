@@ -28,21 +28,21 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/autoclicker.exe dist/
+          Copy-Item target/release/savv-autoclicker.exe dist/
           Copy-Item README.md dist/
           Copy-Item assets/fonts/LICENSE.txt dist/FONT-LICENSE.txt
-          Compress-Archive -Path dist/* -DestinationPath autoclicker-windows-x86_64.zip
+          Compress-Archive -Path dist/* -DestinationPath savv-autoclicker-windows-x86_64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: autoclicker-windows-x86_64
-          path: autoclicker-windows-x86_64.zip
+          name: savv-autoclicker-windows-x86_64
+          path: savv-autoclicker-windows-x86_64.zip
           if-no-files-found: error
 
       - name: Attach archive to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: autoclicker-windows-x86_64.zip
+          files: savv-autoclicker-windows-x86_64.zip
           fail_on_unmatched_files: true

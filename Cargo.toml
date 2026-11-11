@@ -1,6 +1,6 @@
 [package]
-name = "autoclicker"
-version = "0.2.0"
+name = "savv-autoclicker"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 build = "build.rs"
@@ -43,12 +43,16 @@ egui-winit = { version = "0.34.3", optional = true, default-features = false, fe
 [target."cfg(windows)".dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Media",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -58,11 +62,11 @@ windows = { version = "0.62.2", features = [
 winresource = "0.1"
 
 [[bin]]
-name = "autoclicker"
+name = "savv-autoclicker"
 path = "src/main.rs"
 
 [lib]
-name = "autoclicker"
+name = "savv_autoclicker"
 path = "src/lib.rs"
 
 [profile.release]

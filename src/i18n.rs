@@ -385,14 +385,6 @@ define_strings! {
         "Píxeles X/Y desde la esquina superior izquierda",
         "Pixels X/Y a partir do canto superior esquerdo"
     ],
-    PickCurrent: [
-        "USE CURRENT",
-        "ВЗЯТЬ ТЕКУЩУЮ",
-        "AKTUELLE NEHMEN",
-        "PRENDRE ACTUELLE",
-        "USAR ACTUAL",
-        "USAR ATUAL"
-    ],
     CurrentPicked: [
         "Current position: {}, {}.",
         "Текущая позиция: {}, {}.",
@@ -581,6 +573,185 @@ define_strings! {
         "Tecla de mantener desactivada.",
         "Tecla de segurar desativada."
     ],
+    TargetSequence: ["SEQUENCE", "ПОСЛЕДОВАТЕЛЬНО", "SEQUENZ", "SÉQUENCE", "SECUENCIA", "SEQUÊNCIA"],
+    PickWaiting: [
+        "Click anywhere to pick a point. Esc cancels.",
+        "Кликните в любом месте, чтобы выбрать точку. Esc — отмена.",
+        "Klicke irgendwo, um einen Punkt zu wählen. Esc bricht ab.",
+        "Cliquez n'importe où pour choisir un point. Échap annule.",
+        "Haz clic en cualquier lugar para elegir un punto. Esc cancela.",
+        "Clique em qualquer lugar para escolher um ponto. Esc cancela."
+    ],
+    PickCancelled: [
+        "Point picking cancelled.",
+        "Выбор точки отменён.",
+        "Punktwahl abgebrochen.",
+        "Sélection du point annulée.",
+        "Selección de punto cancelada.",
+        "Seleção de ponto cancelada."
+    ],
+    PickHint: [
+        "Pick a point (Esc cancels)",
+        "Выбрать точку (Esc — отмена)",
+        "Punkt wählen (Esc bricht ab)",
+        "Choisir un point (Échap annule)",
+        "Elegir un punto (Esc cancela)",
+        "Escolher um ponto (Esc cancela)"
+    ],
+    RowInterval: ["Point interval", "Интервал точек", "Punktintervall", "Intervalle des points", "Intervalo de puntos", "Intervalo dos pontos"],
+    HintInterval: [
+        "Delay between sequence points, 1 - 60000 ms",
+        "Пауза между точками последовательности, 1 - 60000 мс",
+        "Pause zwischen den Punkten der Sequenz, 1 - 60000 ms",
+        "Délai entre les points de la séquence, 1 - 60000 ms",
+        "Pausa entre los puntos de la secuencia, 1 - 60000 ms",
+        "Pausa entre os pontos da sequência, 1 - 60000 ms"
+    ],
+    RowPoints: ["Points", "Точки", "Punkte", "Points", "Puntos", "Pontos"],
+    HintPoints: [
+        "Clicks move through these points in order; at least two are required",
+        "Клики по очереди проходят по этим точкам; нужно минимум две",
+        "Klicks laufen der Reihe nach durch diese Punkte; mindestens zwei nötig",
+        "Les clics parcourent ces points dans l'ordre ; il en faut au moins deux",
+        "Los clics recorren estos puntos en orden; se necesitan al menos dos",
+        "Os cliques percorrem estes pontos em ordem; são necessários pelo menos dois"
+    ],
+    AddPoint: ["ADD POINT", "ДОБАВИТЬ ТОЧКУ", "PUNKT HINZUFÜGEN", "AJOUTER UN POINT", "AÑADIR PUNTO", "ADICIONAR PONTO"],
+    RemovePoint: ["Remove point", "Удалить точку", "Punkt entfernen", "Supprimer le point", "Eliminar punto", "Remover ponto"],
+    PointsEmpty: [
+        "No points yet. Press Add point, then click the target location.",
+        "Точек пока нет. Нажмите «Добавить точку», затем кликните по нужному месту.",
+        "Noch keine Punkte. Klicke auf „Punkt hinzufügen“ und dann auf die Zielstelle.",
+        "Aucun point. Cliquez sur « Ajouter un point », puis sur la cible.",
+        "Aún no hay puntos. Pulsa «Añadir punto» y luego haz clic en el destino.",
+        "Ainda não há pontos. Pressione «Adicionar ponto» e clique no destino."
+    ],
+    PointsFull: [
+        "The maximum of 16 points is reached.",
+        "Достигнут максимум из 16 точек.",
+        "Das Maximum von 16 Punkten ist erreicht.",
+        "Le maximum de 16 points est atteint.",
+        "Se ha alcanzado el máximo de 16 puntos.",
+        "O máximo de 16 pontos foi atingido."
+    ],
+    CursorModeHint: [
+        "Clicks follow the current cursor position.",
+        "Клики идут в текущую позицию курсора.",
+        "Klicks folgen der aktuellen Cursorposition.",
+        "Les clics suivent la position actuelle du curseur.",
+        "Los clics siguen la posición actual del cursor.",
+        "Os cliques seguem a posição atual do cursor."
+    ],
+    SequenceSpeedHint: [
+        "The point interval controls the speed in sequence mode.",
+        "В режиме последовательности скорость задаёт интервал точек.",
+        "Im Sequenzmodus bestimmt das Punktintervall die Geschwindigkeit.",
+        "En mode séquence, l'intervalle des points définit la vitesse.",
+        "En modo secuencia, el intervalo de puntos define la velocidad.",
+        "No modo sequência, o intervalo dos pontos define a velocidade."
+    ],
+    HeroSequenceClicks: [
+        "Sequence of {} points.",
+        "Последовательность из {} точек.",
+        "Sequenz aus {} Punkten.",
+        "Séquence de {} points.",
+        "Secuencia de {} puntos.",
+        "Sequência de {} pontos."
+    ],
+    RowUiScale: ["UI scale", "Масштаб интерфейса", "Oberflächengröße", "Échelle de l'interface", "Escala de la interfaz", "Escala da interface"],
+    HintUiScale: [
+        "Size of the interface, 80 - 150%",
+        "Размер интерфейса, 80 - 150%",
+        "Größe der Oberfläche, 80 - 150 %",
+        "Taille de l'interface, 80 - 150 %",
+        "Tamaño de la interfaz, 80 - 150 %",
+        "Tamanho da interface, 80 - 150%"
+    ],
+    RowMinimizeTray: ["Minimize to tray", "Сворачивать в трей", "In den Infobereich minimieren", "Réduire dans la zone de notification", "Minimizar a la bandeja", "Minimizar para a bandeja"],
+    HintMinimizeTray: [
+        "Keep the app in the notification area when minimized",
+        "Оставлять приложение в области уведомлений при сворачивании",
+        "Die App beim Minimieren im Infobereich behalten",
+        "Garder l'application dans la zone de notification lorsqu'elle est réduite",
+        "Mantener la aplicación en el área de notificación al minimizar",
+        "Manter a aplicação na área de notificação ao minimizar"
+    ],
+    TrayShow: ["Show", "Показать", "Anzeigen", "Afficher", "Mostrar", "Mostrar"],
+    TrayExit: ["Exit", "Выход", "Beenden", "Quitter", "Salir", "Sair"],
+    TrayFailed: [
+        "Could not create the tray icon: {}",
+        "Не удалось создать значок в трее: {}",
+        "Das Infobereichssymbol konnte nicht erstellt werden: {}",
+        "Impossible de créer l'icône de la zone de notification : {}",
+        "No se pudo crear el icono de la bandeja: {}",
+        "Não foi possível criar o ícone da bandeja: {}"
+    ],
+    ElevationWarn: [
+        "Not running as administrator: clicks are ignored by elevated apps and games.",
+        "Приложение запущено без прав администратора: повышенные приложения и игры игнорируют клики.",
+        "Läuft nicht als Administrator: Erhöhte Apps und Spiele ignorieren die Klicks.",
+        "Ne s'exécute pas en administrateur : les applications et jeux élevés ignorent les clics.",
+        "No se ejecuta como administrador: las aplicaciones y juegos elevados ignoran los clics.",
+        "Não está em execução como administrador: aplicações e jogos elevados ignoram os cliques."
+    ],
+    ElevationRestart: [
+        "RESTART AS ADMINISTRATOR",
+        "ПЕРЕЗАПУСТИТЬ ОТ АДМИНИСТРАТОРА",
+        "ALS ADMINISTRATOR NEU STARTEN",
+        "REDÉMARRER EN ADMINISTRATEUR",
+        "REINICIAR COMO ADMINISTRADOR",
+        "REINICIAR COMO ADMINISTRADOR"
+    ],
+    ElevationRestarting: [
+        "Restarting with administrator privileges…",
+        "Перезапуск с правами администратора…",
+        "Neustart mit Administratorrechten…",
+        "Redémarrage en tant qu'administrateur…",
+        "Reiniciando como administrador…",
+        "Reiniciando como administrador…"
+    ],
+    ElevationFailed: [
+        "Could not restart as administrator: {}",
+        "Не удалось перезапустить от администратора: {}",
+        "Neustart als Administrator fehlgeschlagen: {}",
+        "Impossible de redémarrer en administrateur : {}",
+        "No se pudo reiniciar como administrador: {}",
+        "Não foi possível reiniciar como administrador: {}"
+    ],
+    DefaultsButton: [
+        "RESTORE DEFAULTS",
+        "СБРОСИТЬ НАСТРОЙКИ",
+        "STANDARD WIEDERHERSTELLEN",
+        "RÉTABLIR LES DÉFAUTS",
+        "RESTABLECER VALORES",
+        "RESTAURAR PADRÕES"
+    ],
+    DefaultsTitle: ["RESET", "СБРОС", "ZURÜCKSETZEN", "RÉINITIALISER", "RESTABLECER", "REDEFINIR"],
+    DefaultsQuestion: [
+        "Restore default settings?",
+        "Восстановить настройки по умолчанию?",
+        "Standardeinstellungen wiederherstellen?",
+        "Rétablir les réglages par défaut ?",
+        "¿Restablecer la configuración predeterminada?",
+        "Restaurar as configurações padrão?"
+    ],
+    DefaultsText: [
+        "Click settings, mode, points, hotkeys, theme, language and UI scale return to defaults. Autostart and tray preferences are kept.",
+        "Настройки кликов, режим, точки, горячие клавиши, тема, язык и масштаб вернутся к значениям по умолчанию. Автозапуск и трей сохранятся.",
+        "Klick-Einstellungen, Modus, Punkte, Tasten, Design, Sprache und Größe werden zurückgesetzt. Autostart und Infobereich bleiben erhalten.",
+        "Les réglages de clic, le mode, les points, les raccourcis, le thème, la langue et l'échelle reviennent aux valeurs par défaut. Le démarrage automatique et la zone de notification sont conservés.",
+        "La configuración de clics, el modo, los puntos, los atajos, el tema, el idioma y la escala vuelven a los valores predeterminados. El inicio automático y la bandeja se mantienen.",
+        "As configurações de clique, o modo, os pontos, os atalhos, o tema, o idioma e a escala voltam aos padrões. A inicialização automática e a bandeja são mantidas."
+    ],
+    DefaultsConfirm: ["RESTORE", "СБРОСИТЬ", "ZURÜCKSETZEN", "RÉTABLIR", "RESTABLECER", "RESTAURAR"],
+    DefaultsDone: [
+        "Default settings restored.",
+        "Настройки по умолчанию восстановлены.",
+        "Standardeinstellungen wiederhergestellt.",
+        "Réglages par défaut rétablis.",
+        "Configuración predeterminada restablecida.",
+        "Configurações padrão restauradas."
+    ],
     RowLanguage: ["Language", "Язык", "Sprache", "Langue", "Idioma", "Idioma"],
     HintLanguage: [
         "Interface language; Auto follows the system",
@@ -601,20 +772,20 @@ define_strings! {
     ],
     RowAutostart: ["Start at login", "Запускать при входе", "Beim Anmelden starten", "Lancer à la connexion", "Iniciar al entrar", "Iniciar no login"],
     HintAutostart: [
-        "The background daemon starts with the Linux session",
-        "Фоновый демон стартует вместе с сеансом Linux",
-        "Der Hintergrund-Daemon startet mit der Linux-Sitzung",
-        "Le démon d'arrière-plan démarre avec la session Linux",
-        "El daemon en segundo plano se inicia con la sesión de Linux",
-        "O daemon em segundo plano inicia com a sessão do Linux"
+        "Start the app automatically when you log in",
+        "Автоматически запускать приложение при входе в систему",
+        "Die App beim Anmelden automatisch starten",
+        "Lancer automatiquement l'application à la connexion",
+        "Iniciar la aplicación automáticamente al entrar",
+        "Iniciar a aplicação automaticamente ao entrar"
     ],
     AutostartUnavailable: [
-        "Autostart is available on Linux only.",
-        "Автозапуск доступен только в Linux.",
-        "Autostart ist nur unter Linux verfügbar.",
-        "Le démarrage automatique n'est disponible que sous Linux.",
-        "El inicio automático solo está disponible en Linux.",
-        "A inicialização automática está disponível apenas no Linux."
+        "Autostart is available on Linux and Windows only.",
+        "Автозапуск доступен только в Linux и Windows.",
+        "Autostart ist nur unter Linux und Windows verfügbar.",
+        "Le démarrage automatique n'est disponible que sous Linux et Windows.",
+        "El inicio automático solo está disponible en Linux y Windows.",
+        "A inicialização automática está disponível apenas no Linux e Windows."
     ],
     AutostartOn: [
         "Autostart enabled.",
@@ -641,12 +812,12 @@ define_strings! {
         "Não foi possível alterar a inicialização automática: {}"
     ],
     AutostartHint: [
-        "Adds a desktop entry for the current executable. Re-enable it after moving the binary.",
-        "Добавляет запись для текущего исполняемого файла. После переноса бинарника включите заново.",
-        "Fügt einen Eintrag für die aktuelle ausführbare Datei hinzu. Nach dem Verschieben erneut aktivieren.",
-        "Ajoute une entrée pour l'exécutable actuel. Réactivez après avoir déplacé le binaire.",
-        "Añade una entrada para el ejecutable actual. Vuelve a activarlo si mueves el binario.",
-        "Adiciona uma entrada para o executável atual. Reative após mover o binário."
+        "Starts the app for the current executable. Re-enable it after moving the binary.",
+        "Запускает приложение из текущего файла. После переноса бинарника включите заново.",
+        "Startet die App aus der aktuellen Datei. Nach dem Verschieben erneut aktivieren.",
+        "Démarre l'application depuis l'exécutable actuel. Réactivez après avoir déplacé le binaire.",
+        "Inicia la aplicación desde el ejecutable actual. Vuelve a activarlo si mueves el binario.",
+        "Inicia a aplicação a partir do executável atual. Reative após mover o binário."
     ],
     DaemonRunning: ["DAEMON RUNNING", "ДЕМОН РАБОТАЕТ", "DAEMON LÄUFT", "DÉMON ACTIF", "DAEMON ACTIVO", "DAEMON ATIVO"],
     DaemonStopped: ["DAEMON NOT RUNNING", "ДЕМОН НЕ ЗАПУЩЕН", "DAEMON NICHT AKTIV", "DÉMON INACTIF", "DAEMON INACTIVO", "DAEMON INATIVO"],

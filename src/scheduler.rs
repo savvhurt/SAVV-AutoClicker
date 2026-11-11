@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::backend::Backend;
-use crate::state::{Settings, SharedState, Snapshot, StopReason};
+use crate::state::{ClickMode, Settings, SharedState, Snapshot, StopReason};
 
 const MAX_SLEEP_SLICE: Duration = Duration::from_millis(20);
 const MIN_PERIOD: Duration = Duration::from_millis(1);
@@ -42,6 +42,7 @@ fn click_series(shared: &SharedState, backend: &mut dyn Backend, initial: Snapsh
     }
 
     let mut deadline = Instant::now();
+    let mut sequence_index = 0usize;
 
     loop {
         let snapshot = shared.snapshot();
@@ -59,7 +60,23 @@ fn click_series(shared: &SharedState, backend: &mut dyn Backend, initial: Snapsh
 
         let button = settings.button;
 
-        if let Some(target) = settings.target {
+        let target = match settings.mode {
+            ClickMode::Cursor => None,
+            ClickMode::Point => settings.target,
+            ClickMode::Sequence => {
+                let count = settings.point_count();
+                if count == 0 {
+                    shared.set_error("sequence mode has no points".to_string());
+                    shared.off();
+                    break;
+                }
+                let point = settings.point_at(sequence_index % count);
+                sequence_index = (sequence_index + 1) % count;
+                point
+            }
+        };
+
+        if let Some(target) = target {
             if !backend.supports_target() {
                 shared.set_error(
                     "clicking at a fixed point is not supported on this platform".to_string(),
@@ -130,17 +147,24 @@ fn click_series(shared: &SharedState, backend: &mut dyn Backend, initial: Snapsh
 }
 
 fn jittered_period(settings: Settings, rng: &mut Rng) -> Duration {
-    let base = 1.0 / settings.cps;
-    let jitter = if settings.jitter_pct > 0.0 {
-        (rng.next_f64() * 2.0 - 1.0) * settings.jitter_pct / 100.0
+    let base = match settings.mode {
+        ClickMode::Sequence => settings.point_interval,
+        ClickMode::Cursor | ClickMode::Point => Duration::from_secs_f64(1.0 / settings.cps),
+    };
+    jittered_interval(base, settings.jitter_pct, rng)
+}
+
+fn jittered_interval(base: Duration, jitter_pct: f64, rng: &mut Rng) -> Duration {
+    let jitter = if jitter_pct > 0.0 {
+        (rng.next_f64() * 2.0 - 1.0) * jitter_pct / 100.0
     } else {
         0.0
     };
 
     // A 100% jitter may not collapse the interval to zero and turn the
-    // autoclicker into a burst generator.
+    // clicker into a burst generator.
     let factor = (1.0 + jitter).max(0.1);
-    Duration::from_secs_f64(base * factor).clamp(MIN_PERIOD, MAX_PERIOD)
+    Duration::from_secs_f64(base.as_secs_f64() * factor).clamp(MIN_PERIOD, MAX_PERIOD)
 }
 
 fn clamp_hold(requested: Duration, period: Duration) -> Duration {
@@ -497,6 +521,7 @@ mod tests {
         let point = Point::new(10, -20);
         let settings = Settings::new(50.0, Button::Left, 1.0, 0.0)
             .unwrap()
+            .with_mode(ClickMode::Point)
             .with_target(Some(point))
             .unwrap()
             .with_limit(1)
@@ -510,6 +535,92 @@ mod tests {
 
         assert_eq!(presses.load(Ordering::SeqCst), 1);
         assert_eq!(*moves.lock().unwrap(), vec![point]);
+
+        shared.quit();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn sequence_cycles_through_points_in_order() {
+        let points = [Point::new(10, 20), Point::new(30, 40), Point::new(-5, -6)];
+        let settings = Settings::new(50.0, Button::Left, 0.2, 0.0)
+            .unwrap()
+            .with_mode(ClickMode::Sequence)
+            .with_points(&points)
+            .unwrap()
+            .with_point_interval_ms(20)
+            .unwrap()
+            .with_limit(6)
+            .unwrap();
+        let (shared, presses, releases, moves, handle) = spawn_clicker(settings);
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while shared.status().enabled && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let status = shared.status();
+        assert_eq!(status.stop_reason, Some(StopReason::Limit));
+        assert_eq!(presses.load(Ordering::SeqCst), 6);
+        assert_eq!(releases.load(Ordering::SeqCst), 6);
+        assert_eq!(
+            *moves.lock().unwrap(),
+            vec![
+                points[0], points[1], points[2], points[0], points[1], points[2]
+            ]
+        );
+
+        shared.quit();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn sequence_without_points_stops_with_an_error() {
+        let settings = Settings::new(50.0, Button::Left, 1.0, 0.0)
+            .unwrap()
+            .with_mode(ClickMode::Sequence);
+        let (shared, presses, _releases, _moves, handle) = spawn_clicker(settings);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while shared.status().enabled && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(presses.load(Ordering::SeqCst), 0);
+        assert_eq!(shared.status().stop_reason, Some(StopReason::Manual));
+        assert!(
+            shared
+                .status()
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("no points"))
+        );
+
+        shared.quit();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn sequence_interval_sets_the_period() {
+        let settings = Settings::new(50.0, Button::Left, 0.2, 0.0)
+            .unwrap()
+            .with_mode(ClickMode::Sequence)
+            .with_points(&[Point::new(1, 1), Point::new(2, 2)])
+            .unwrap()
+            .with_point_interval_ms(250)
+            .unwrap()
+            .with_limit(2)
+            .unwrap();
+        let (shared, presses, _releases, _moves, handle) = spawn_clicker(settings);
+        let started = Instant::now();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while shared.status().enabled && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(presses.load(Ordering::SeqCst), 2);
+        assert!(started.elapsed() >= Duration::from_millis(230));
 
         shared.quit();
         handle.join().unwrap();
