@@ -117,7 +117,7 @@ pub fn legacy_socket_path() -> PathBuf {
 }
 
 #[cfg(windows)]
-fn pipe_name_for(dir: &std::path::Path) -> String {
+fn pipe_name_for(prefix: &str, dir: &std::path::Path) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
 
     for byte in dir.as_os_str().to_string_lossy().as_bytes() {
@@ -125,28 +125,17 @@ fn pipe_name_for(dir: &std::path::Path) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
 
-    format!("savv-autoclicker-{hash:016x}")
+    format!("{prefix}-{hash:016x}")
 }
 
 #[cfg(windows)]
 pub fn pipe_name() -> String {
-    pipe_name_for(&instance_dir())
+    pipe_name_for("savv-autoclicker", &instance_dir())
 }
 
 #[cfg(windows)]
 pub fn legacy_pipe_name() -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-
-    for byte in legacy_instance_dir()
-        .as_os_str()
-        .to_string_lossy()
-        .as_bytes()
-    {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-
-    format!("autoclicker-{hash:016x}")
+    pipe_name_for("autoclicker", &legacy_instance_dir())
 }
 
 /// Whether the current process runs with administrator privileges. UIPI keeps
@@ -287,4 +276,29 @@ pub fn spawn_daemon(extra_args: &[String]) -> Result<()> {
         .context("failed to spawn the daemon process")?;
 
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipe_names_keep_their_legacy_fnv_format() {
+        // The names are part of the IPC contract: changing the hash would
+        // silently stop the new build from reaching an old daemon.
+        assert_eq!(
+            pipe_name_for(
+                "savv-autoclicker",
+                std::path::Path::new(r"C:\Users\test\AppData\Local\SAVV-AutoClicker"),
+            ),
+            "savv-autoclicker-2816b64b38847ab3"
+        );
+        assert_eq!(
+            pipe_name_for(
+                "autoclicker",
+                std::path::Path::new(r"C:\Users\test\AppData\Local\autoclicker"),
+            ),
+            "autoclicker-abd1daf7a1dfaf36"
+        );
+    }
 }

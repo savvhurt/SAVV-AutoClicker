@@ -131,16 +131,12 @@ macro_rules! define_strings {
 }
 
 define_strings! {
-    ToggleTheme: [
-        "Switch light and dark theme",
-        "Переключить светлую и тёмную тему",
-        "Helles und dunkles Design umschalten",
-        "Basculer entre le thème clair et sombre",
-        "Cambiar entre tema claro y oscuro",
-        "Alternar entre tema claro e escuro"
-    ],
-    ThemeLight: ["LIGHT", "СВЕТЛАЯ", "HELL", "CLAIR", "CLARO", "CLARO"],
-    ThemeDark: ["DARK", "ТЁМНАЯ", "DUNKEL", "SOMBRE", "OSCURO", "ESCURO"],
+    ThemePaper: ["Paper", "Бумага", "Papier", "Papier", "Papel", "Papel"],
+    ThemeGraphite: ["Graphite", "Графит", "Graphit", "Graphite", "Grafito", "Grafite"],
+    ThemeSand: ["Sand", "Песок", "Sand", "Sable", "Arena", "Areia"],
+    ThemeOcean: ["Ocean", "Океан", "Ozean", "Océan", "Océano", "Oceano"],
+    ThemeForest: ["Forest", "Лес", "Wald", "Forêt", "Bosque", "Floresta"],
+    ThemeContrast: ["Contrast", "Контраст", "Kontrast", "Contraste", "Contraste", "Contraste"],
     ThemeNotice: ["Theme: {}.", "Тема: {}.", "Design: {}.", "Thème : {}.", "Tema: {}.", "Tema: {}."],
     StatusStarting: ["STARTING", "ЗАПУСК", "START", "DÉMARRAGE", "INICIANDO", "INICIANDO"],
     StatusStopping: ["STOPPING", "ОСТАНОВКА", "STOPPEN", "ARRÊT", "DETENIENDO", "PARANDO"],
@@ -240,7 +236,6 @@ define_strings! {
     UnitPieces: ["PCS", "ШТ", "STK", "PCS", "UDS", "UN"],
     UnitMs: ["MS", "МС", "MS", "MS", "MS", "MS"],
     Enabled: ["ON", "ВКЛ", "EIN", "ACTIF", "ACTIVADO", "ATIVADO"],
-    Disabled: ["OFF", "ВЫКЛ", "AUS", "INACTIF", "DESACTIVADO", "DESATIVADO"],
     NoticeError: ["ERROR", "ОШИБКА", "FEHLER", "ERREUR", "ERROR", "ERRO"],
     NoticeSystem: ["SYSTEM", "СИСТЕМА", "SYSTEM", "SYSTÈME", "SISTEMA", "SISTEMA"],
     NoticeHotkey: ["HOTKEY", "ХОТКЕЙ", "TASTE", "RACCOURCI", "ATAJO", "ATALHO"],
@@ -658,15 +653,6 @@ define_strings! {
         "Secuencia de {} puntos.",
         "Sequência de {} pontos."
     ],
-    RowUiScale: ["UI scale", "Масштаб интерфейса", "Oberflächengröße", "Échelle de l'interface", "Escala de la interfaz", "Escala da interface"],
-    HintUiScale: [
-        "Size of the interface, 80 - 150%",
-        "Размер интерфейса, 80 - 150%",
-        "Größe der Oberfläche, 80 - 150 %",
-        "Taille de l'interface, 80 - 150 %",
-        "Tamaño de la interfaz, 80 - 150 %",
-        "Tamanho da interface, 80 - 150%"
-    ],
     RowMinimizeTray: ["Minimize to tray", "Сворачивать в трей", "In den Infobereich minimieren", "Réduire dans la zone de notification", "Minimizar a la bandeja", "Minimizar para a bandeja"],
     HintMinimizeTray: [
         "Keep the app in the notification area when minimized",
@@ -685,6 +671,14 @@ define_strings! {
         "Impossible de créer l'icône de la zone de notification : {}",
         "No se pudo crear el icono de la bandeja: {}",
         "Não foi possível criar o ícone da bandeja: {}"
+    ],
+    TrayEnabled: [
+        "Minimize to tray enabled.",
+        "Сворачивание в трей включено.",
+        "Minimieren in den Infobereich aktiviert.",
+        "Réduction dans la zone de notification activée.",
+        "Minimizar a la bandeja activado.",
+        "Minimizar para a bandeja ativado."
     ],
     ElevationWarn: [
         "Not running as administrator: clicks are ignored by elevated apps and games.",
@@ -736,12 +730,12 @@ define_strings! {
         "Restaurar as configurações padrão?"
     ],
     DefaultsText: [
-        "Click settings, mode, points, hotkeys, theme, language and UI scale return to defaults. Autostart and tray preferences are kept.",
-        "Настройки кликов, режим, точки, горячие клавиши, тема, язык и масштаб вернутся к значениям по умолчанию. Автозапуск и трей сохранятся.",
-        "Klick-Einstellungen, Modus, Punkte, Tasten, Design, Sprache und Größe werden zurückgesetzt. Autostart und Infobereich bleiben erhalten.",
-        "Les réglages de clic, le mode, les points, les raccourcis, le thème, la langue et l'échelle reviennent aux valeurs par défaut. Le démarrage automatique et la zone de notification sont conservés.",
-        "La configuración de clics, el modo, los puntos, los atajos, el tema, el idioma y la escala vuelven a los valores predeterminados. El inicio automático y la bandeja se mantienen.",
-        "As configurações de clique, o modo, os pontos, os atalhos, o tema, o idioma e a escala voltam aos padrões. A inicialização automática e a bandeja são mantidas."
+        "Click settings, mode, points, hotkeys, theme and language return to defaults. Autostart and tray preferences are kept.",
+        "Настройки кликов, режим, точки, горячие клавиши, тема и язык вернутся к значениям по умолчанию. Автозапуск и трей сохранятся.",
+        "Klick-Einstellungen, Modus, Punkte, Tasten, Design und Sprache werden zurückgesetzt. Autostart und Infobereich bleiben erhalten.",
+        "Les réglages de clic, le mode, les points, les raccourcis, le thème et la langue reviennent aux valeurs par défaut. Le démarrage automatique et la zone de notification sont conservés.",
+        "La configuración de clics, el modo, los puntos, los atajos, el tema y el idioma vuelven a los valores predeterminados. El inicio automático y la bandeja se mantienen.",
+        "As configurações de clique, o modo, os pontos, os atalhos, o tema e o idioma voltam aos padrões. A inicialização automática e a bandeja são mantidas."
     ],
     DefaultsConfirm: ["RESTORE", "СБРОСИТЬ", "ZURÜCKSETZEN", "RÉTABLIR", "RESTABLECER", "RESTAURAR"],
     DefaultsDone: [
@@ -763,12 +757,12 @@ define_strings! {
     ],
     RowTheme: ["Theme", "Тема", "Design", "Thème", "Tema", "Tema"],
     HintTheme: [
-        "Light or dark appearance",
-        "Светлое или тёмное оформление",
-        "Helles oder dunkles Erscheinungsbild",
-        "Apparence claire ou sombre",
-        "Apariencia clara u oscura",
-        "Aparência clara ou escura"
+        "Appearance; changes apply immediately",
+        "Оформление; применяется сразу",
+        "Erscheinungsbild; Änderungen gelten sofort",
+        "Apparence ; appliquée immédiatement",
+        "Apariencia; se aplica al instante",
+        "Aparência; aplica-se imediatamente"
     ],
     RowAutostart: ["Start at login", "Запускать при входе", "Beim Anmelden starten", "Lancer à la connexion", "Iniciar al entrar", "Iniciar no login"],
     HintAutostart: [

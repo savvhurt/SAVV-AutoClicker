@@ -1,38 +1,120 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Shadow,
     Stroke, TextStyle, Vec2,
 };
 
-use super::config::ThemeMode;
+use super::config::Theme;
 
-// Warm paper, ink and a single signal accent. The dark palette is graphite
-// with the same orange signal colour.
-const ACCENT: Color32 = Color32::from_rgb(209, 73, 44);
+// Each palette keeps the same signal accent for active clicks while the
+// surrounding paper, graphite, sand, ocean, forest or contrast surface changes.
+#[derive(Clone, Copy)]
+struct Palette {
+    dark: bool,
+    bg: Color32,
+    panel: Color32,
+    input: Color32,
+    line: Color32,
+    line_soft: Color32,
+    text: Color32,
+    muted: Color32,
+    dim: Color32,
+    warning: Color32,
+    danger: Color32,
+    accent: Color32,
+}
 
-const LIGHT_BG: Color32 = Color32::from_rgb(243, 241, 235);
-const LIGHT_PANEL: Color32 = Color32::from_rgb(250, 249, 245);
-const LIGHT_INPUT: Color32 = Color32::from_rgb(236, 233, 226);
-const LIGHT_LINE: Color32 = Color32::from_rgb(210, 205, 195);
-const LIGHT_LINE_SOFT: Color32 = Color32::from_rgb(227, 223, 214);
-const LIGHT_TEXT: Color32 = Color32::from_rgb(24, 23, 20);
-const LIGHT_MUTED: Color32 = Color32::from_rgb(106, 102, 94);
-const LIGHT_DIM: Color32 = Color32::from_rgb(143, 137, 127);
-const LIGHT_WARNING: Color32 = Color32::from_rgb(164, 98, 15);
-const LIGHT_DANGER: Color32 = Color32::from_rgb(169, 46, 34);
+const PAPER: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(243, 241, 235),
+    panel: Color32::from_rgb(250, 249, 245),
+    input: Color32::from_rgb(236, 233, 226),
+    line: Color32::from_rgb(210, 205, 195),
+    line_soft: Color32::from_rgb(227, 223, 214),
+    text: Color32::from_rgb(24, 23, 20),
+    muted: Color32::from_rgb(106, 102, 94),
+    dim: Color32::from_rgb(143, 137, 127),
+    warning: Color32::from_rgb(164, 98, 15),
+    danger: Color32::from_rgb(169, 46, 34),
+    accent: Color32::from_rgb(209, 73, 44),
+};
 
-const DARK_BG: Color32 = Color32::from_rgb(24, 24, 22);
-const DARK_PANEL: Color32 = Color32::from_rgb(33, 33, 30);
-const DARK_INPUT: Color32 = Color32::from_rgb(43, 42, 38);
-const DARK_LINE: Color32 = Color32::from_rgb(69, 67, 60);
-const DARK_LINE_SOFT: Color32 = Color32::from_rgb(50, 49, 44);
-const DARK_TEXT: Color32 = Color32::from_rgb(238, 235, 226);
-const DARK_MUTED: Color32 = Color32::from_rgb(174, 168, 156);
-const DARK_DIM: Color32 = Color32::from_rgb(126, 121, 112);
-const DARK_WARNING: Color32 = Color32::from_rgb(226, 166, 74);
-const DARK_DANGER: Color32 = Color32::from_rgb(234, 108, 94);
+const GRAPHITE: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(24, 24, 22),
+    panel: Color32::from_rgb(33, 33, 30),
+    input: Color32::from_rgb(43, 42, 38),
+    line: Color32::from_rgb(69, 67, 60),
+    line_soft: Color32::from_rgb(50, 49, 44),
+    text: Color32::from_rgb(238, 235, 226),
+    muted: Color32::from_rgb(174, 168, 156),
+    dim: Color32::from_rgb(126, 121, 112),
+    warning: Color32::from_rgb(226, 166, 74),
+    danger: Color32::from_rgb(234, 108, 94),
+    accent: Color32::from_rgb(209, 73, 44),
+};
+
+const SAND: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(243, 235, 219),
+    panel: Color32::from_rgb(250, 244, 232),
+    input: Color32::from_rgb(235, 225, 205),
+    line: Color32::from_rgb(216, 203, 179),
+    line_soft: Color32::from_rgb(231, 220, 199),
+    text: Color32::from_rgb(52, 42, 28),
+    muted: Color32::from_rgb(124, 109, 89),
+    dim: Color32::from_rgb(157, 144, 124),
+    warning: Color32::from_rgb(171, 102, 18),
+    danger: Color32::from_rgb(170, 52, 37),
+    accent: Color32::from_rgb(184, 86, 46),
+};
+
+const OCEAN: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(17, 26, 36),
+    panel: Color32::from_rgb(24, 35, 47),
+    input: Color32::from_rgb(32, 46, 60),
+    line: Color32::from_rgb(52, 70, 88),
+    line_soft: Color32::from_rgb(37, 52, 67),
+    text: Color32::from_rgb(226, 237, 245),
+    muted: Color32::from_rgb(156, 177, 194),
+    dim: Color32::from_rgb(110, 131, 148),
+    warning: Color32::from_rgb(229, 172, 80),
+    danger: Color32::from_rgb(238, 112, 104),
+    accent: Color32::from_rgb(78, 178, 199),
+};
+
+const FOREST: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(19, 27, 22),
+    panel: Color32::from_rgb(26, 36, 30),
+    input: Color32::from_rgb(35, 48, 40),
+    line: Color32::from_rgb(56, 74, 62),
+    line_soft: Color32::from_rgb(41, 56, 47),
+    text: Color32::from_rgb(228, 238, 229),
+    muted: Color32::from_rgb(159, 177, 161),
+    dim: Color32::from_rgb(112, 132, 115),
+    warning: Color32::from_rgb(222, 169, 79),
+    danger: Color32::from_rgb(234, 112, 96),
+    accent: Color32::from_rgb(112, 180, 128),
+};
+
+const CONTRAST: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(255, 255, 255),
+    panel: Color32::from_rgb(248, 248, 248),
+    input: Color32::from_rgb(235, 235, 235),
+    line: Color32::from_rgb(28, 28, 28),
+    line_soft: Color32::from_rgb(160, 160, 160),
+    text: Color32::from_rgb(0, 0, 0),
+    muted: Color32::from_rgb(55, 55, 55),
+    dim: Color32::from_rgb(90, 90, 90),
+    warning: Color32::from_rgb(150, 80, 0),
+    danger: Color32::from_rgb(190, 0, 0),
+    accent: Color32::from_rgb(250, 204, 21),
+};
 
 const SANS_REGULAR: &str = "plex-sans-regular";
 const SANS_MEDIUM: &str = "plex-sans-medium";
@@ -44,78 +126,94 @@ const FAMILY_SANS_MEDIUM: &str = "plex-sans-medium-family";
 const FAMILY_SANS_SEMIBOLD: &str = "plex-sans-semibold-family";
 const FAMILY_MONO_MEDIUM: &str = "plex-mono-medium-family";
 
-static DARK: AtomicBool = AtomicBool::new(false);
+static CURRENT: AtomicUsize = AtomicUsize::new(0);
 
-pub fn install(ctx: &egui::Context, mode: ThemeMode) {
+pub fn install(ctx: &egui::Context, theme: Theme) {
     install_fonts(ctx);
-    DARK.store(mode == ThemeMode::Dark, Ordering::Relaxed);
+    CURRENT.store(theme.index(), Ordering::Relaxed);
     install_style(ctx);
-    ctx.set_theme(theme_preference(mode));
+    ctx.set_theme(theme_preference(theme));
 }
 
-pub fn set_mode(ctx: &egui::Context, mode: ThemeMode) {
-    DARK.store(mode == ThemeMode::Dark, Ordering::Relaxed);
-    ctx.set_theme(theme_preference(mode));
+pub fn set_theme(ctx: &egui::Context, theme: Theme) {
+    CURRENT.store(theme.index(), Ordering::Relaxed);
+    install_style(ctx);
+    ctx.set_theme(theme_preference(theme));
     ctx.request_repaint();
 }
 
-fn theme_preference(mode: ThemeMode) -> egui::ThemePreference {
-    match mode {
-        ThemeMode::Light => egui::ThemePreference::Light,
-        ThemeMode::Dark => egui::ThemePreference::Dark,
+fn theme_preference(theme: Theme) -> egui::ThemePreference {
+    if theme.is_dark() {
+        egui::ThemePreference::Dark
+    } else {
+        egui::ThemePreference::Light
     }
 }
 
-fn dark() -> bool {
-    DARK.load(Ordering::Relaxed)
+fn palette() -> Palette {
+    match Theme::from_index(CURRENT.load(Ordering::Relaxed)) {
+        Theme::Paper => PAPER,
+        Theme::Graphite => GRAPHITE,
+        Theme::Sand => SAND,
+        Theme::Ocean => OCEAN,
+        Theme::Forest => FOREST,
+        Theme::Contrast => CONTRAST,
+    }
 }
 
 pub fn bg() -> Color32 {
-    if dark() { DARK_BG } else { LIGHT_BG }
+    palette().bg
 }
 
 pub fn panel() -> Color32 {
-    if dark() { DARK_PANEL } else { LIGHT_PANEL }
+    palette().panel
 }
 
 pub fn input() -> Color32 {
-    if dark() { DARK_INPUT } else { LIGHT_INPUT }
+    palette().input
 }
 
 pub fn line() -> Color32 {
-    if dark() { DARK_LINE } else { LIGHT_LINE }
+    palette().line
 }
 
 pub fn line_soft() -> Color32 {
-    if dark() {
-        DARK_LINE_SOFT
-    } else {
-        LIGHT_LINE_SOFT
-    }
+    palette().line_soft
 }
 
 pub fn text() -> Color32 {
-    if dark() { DARK_TEXT } else { LIGHT_TEXT }
+    palette().text
 }
 
 pub fn muted() -> Color32 {
-    if dark() { DARK_MUTED } else { LIGHT_MUTED }
+    palette().muted
 }
 
 pub fn dim() -> Color32 {
-    if dark() { DARK_DIM } else { LIGHT_DIM }
+    palette().dim
 }
 
 pub fn accent() -> Color32 {
-    ACCENT
+    palette().accent
+}
+
+/// Readable foreground for content drawn on top of [`accent`].
+pub fn on_accent() -> Color32 {
+    let accent = palette().accent;
+    let luma = 0.299 * accent.r() as f32 + 0.587 * accent.g() as f32 + 0.114 * accent.b() as f32;
+    if luma > 150.0 {
+        Color32::from_rgb(24, 23, 20)
+    } else {
+        Color32::from_rgb(252, 250, 245)
+    }
 }
 
 pub fn warning() -> Color32 {
-    if dark() { DARK_WARNING } else { LIGHT_WARNING }
+    palette().warning
 }
 
 pub fn danger() -> Color32 {
-    if dark() { DARK_DANGER } else { LIGHT_DANGER }
+    palette().danger
 }
 
 pub fn sans(size: f32) -> FontId {
@@ -147,16 +245,7 @@ pub fn mix(from: Color32, to: Color32, t: f32) -> Color32 {
 }
 
 pub fn shadow() -> Shadow {
-    Shadow {
-        offset: [0, 12],
-        blur: 32,
-        spread: 0,
-        color: if dark() {
-            Color32::from_black_alpha(120)
-        } else {
-            Color32::from_black_alpha(38)
-        },
-    }
+    shadow_for(palette().dark)
 }
 
 pub fn rule(ui: &mut egui::Ui) {
@@ -227,14 +316,13 @@ fn prepend(fonts: &mut FontDefinitions, family: FontFamily, name: &str) {
 
 fn install_style(ctx: &egui::Context) {
     let base = ctx.style_of(egui::Theme::Light);
-    let light = build_style((*base).clone(), false);
-    let dark = build_style((*base).clone(), true);
+    let style = build_style((*base).clone(), palette());
 
-    ctx.set_style_of(egui::Theme::Light, light);
-    ctx.set_style_of(egui::Theme::Dark, dark);
+    ctx.set_style_of(egui::Theme::Light, style.clone());
+    ctx.set_style_of(egui::Theme::Dark, style);
 }
 
-fn build_style(mut style: egui::Style, dark: bool) -> egui::Style {
+fn build_style(mut style: egui::Style, palette: Palette) -> egui::Style {
     style.animation_time = 0.16;
     style.spacing.item_spacing = Vec2::new(8.0, 3.0);
     style.spacing.button_padding = Vec2::new(10.0, 6.0);
@@ -245,39 +333,40 @@ fn build_style(mut style: egui::Style, dark: bool) -> egui::Style {
     style.spacing.indent = 16.0;
     style.spacing.scroll = egui::style::ScrollStyle::thin();
 
-    style.text_styles.insert(TextStyle::Small, sans(11.0));
-    style.text_styles.insert(TextStyle::Body, sans(13.5));
+    style.text_styles.insert(TextStyle::Small, sans(11.5));
+    style.text_styles.insert(TextStyle::Body, sans(14.0));
     style
         .text_styles
-        .insert(TextStyle::Button, sans_medium(13.0));
-    style.text_styles.insert(TextStyle::Monospace, mono(12.0));
+        .insert(TextStyle::Button, sans_medium(13.5));
+    style.text_styles.insert(TextStyle::Monospace, mono(12.5));
     style
         .text_styles
         .insert(TextStyle::Heading, sans_semibold(22.0));
 
-    style.visuals = visuals(dark);
+    style.visuals = visuals(palette);
     style
 }
 
-fn visuals(dark_mode: bool) -> egui::Visuals {
-    let bg = if dark_mode { DARK_BG } else { LIGHT_BG };
-    let panel = if dark_mode { DARK_PANEL } else { LIGHT_PANEL };
-    let input = if dark_mode { DARK_INPUT } else { LIGHT_INPUT };
-    let line = if dark_mode { DARK_LINE } else { LIGHT_LINE };
-    let text = if dark_mode { DARK_TEXT } else { LIGHT_TEXT };
-    let warning = if dark_mode {
-        DARK_WARNING
-    } else {
-        LIGHT_WARNING
-    };
-    let danger = if dark_mode { DARK_DANGER } else { LIGHT_DANGER };
+fn visuals(palette: Palette) -> egui::Visuals {
+    let Palette {
+        dark,
+        bg,
+        panel,
+        input,
+        line,
+        text,
+        warning,
+        danger,
+        accent,
+        ..
+    } = palette;
 
-    let mut visuals = if dark_mode {
+    let mut visuals = if dark {
         egui::Visuals::dark()
     } else {
         egui::Visuals::light()
     };
-    visuals.dark_mode = dark_mode;
+    visuals.dark_mode = dark;
     visuals.panel_fill = bg;
     visuals.window_fill = panel;
     visuals.faint_bg_color = input;
@@ -285,16 +374,16 @@ fn visuals(dark_mode: bool) -> egui::Visuals {
     visuals.code_bg_color = input;
     visuals.window_stroke = Stroke::new(1.0_f32, line);
     visuals.window_corner_radius = CornerRadius::same(16);
-    visuals.window_shadow = shadow_for(dark_mode);
-    visuals.popup_shadow = shadow_for(dark_mode);
+    visuals.window_shadow = shadow_for(dark);
+    visuals.popup_shadow = shadow_for(dark);
     visuals.menu_corner_radius = CornerRadius::same(10);
-    visuals.hyperlink_color = ACCENT;
+    visuals.hyperlink_color = accent;
     visuals.warn_fg_color = warning;
     visuals.error_fg_color = danger;
-    visuals.selection.bg_fill = alpha(ACCENT, if dark_mode { 64 } else { 40 });
-    visuals.selection.stroke = Stroke::new(1.0_f32, ACCENT);
+    visuals.selection.bg_fill = alpha(accent, if dark { 64 } else { 40 });
+    visuals.selection.stroke = Stroke::new(1.0_f32, accent);
     visuals.slider_trailing_fill = true;
-    visuals.text_cursor.stroke = Stroke::new(1.5_f32, ACCENT);
+    visuals.text_cursor.stroke = Stroke::new(1.5_f32, accent);
 
     let mut widgets = visuals.widgets.clone();
     widgets.noninteractive = egui::style::WidgetVisuals {
@@ -314,16 +403,16 @@ fn visuals(dark_mode: bool) -> egui::Visuals {
         expansion: 0.0,
     };
     widgets.hovered = egui::style::WidgetVisuals {
-        bg_fill: alpha(text, if dark_mode { 14 } else { 7 }),
-        weak_bg_fill: alpha(text, if dark_mode { 14 } else { 7 }),
+        bg_fill: alpha(text, if dark { 14 } else { 7 }),
+        weak_bg_fill: alpha(text, if dark { 14 } else { 7 }),
         bg_stroke: Stroke::NONE,
         corner_radius: CornerRadius::same(8),
         fg_stroke: Stroke::new(1.0_f32, text),
         expansion: 0.0,
     };
     widgets.active = egui::style::WidgetVisuals {
-        bg_fill: alpha(ACCENT, if dark_mode { 48 } else { 20 }),
-        weak_bg_fill: alpha(ACCENT, if dark_mode { 48 } else { 20 }),
+        bg_fill: alpha(accent, if dark { 48 } else { 20 }),
+        weak_bg_fill: alpha(accent, if dark { 48 } else { 20 }),
         bg_stroke: Stroke::NONE,
         corner_radius: CornerRadius::same(8),
         fg_stroke: Stroke::new(1.0_f32, text),
@@ -334,12 +423,12 @@ fn visuals(dark_mode: bool) -> egui::Visuals {
     visuals
 }
 
-fn shadow_for(dark_mode: bool) -> Shadow {
+fn shadow_for(dark: bool) -> Shadow {
     Shadow {
         offset: [0, 12],
         blur: 32,
         spread: 0,
-        color: Color32::from_black_alpha(if dark_mode { 120 } else { 38 }),
+        color: Color32::from_black_alpha(if dark { 120 } else { 38 }),
     }
 }
 

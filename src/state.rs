@@ -485,7 +485,12 @@ impl Status {
                 "limit" => limit = Some(value.parse::<u64>()?),
                 "delay_ms" => delay_ms = Some(value.parse::<f64>()?),
                 "multi_click" => multi_click = Some(value.parse::<u8>()?),
-                "mode" => mode = ClickMode::parse(value),
+                "mode" => {
+                    mode = Some(
+                        ClickMode::parse(value)
+                            .ok_or_else(|| anyhow::anyhow!("unknown mode `{value}`"))?,
+                    );
+                }
                 "target" => {
                     target = if value.is_empty() || value.eq_ignore_ascii_case("none") {
                         None
@@ -1273,6 +1278,15 @@ mod tests {
         assert!(!parsed.starting);
         assert!(!parsed.hotkey_paused);
         assert!(!parsed.hold_active);
+    }
+
+    #[test]
+    fn status_wire_rejects_an_unknown_mode() {
+        let error = Status::from_wire(
+            "OK\nprotocol: 4\nenabled: false\ncps: 50\nbutton: left\nhold_ms: 10\njitter_pct: 0\nmode: warp\nactual_cps: 0.0\nclicks: 0\n",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown mode"));
     }
 
     #[test]

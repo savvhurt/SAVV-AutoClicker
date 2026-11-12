@@ -7,7 +7,7 @@ use egui::{
 };
 use egui_software_backend::{SoftwareBackend, SoftwareBackendAppConfiguration};
 
-use super::config::{self, MAX_UI_SCALE, MIN_UI_SCALE, ThemeMode, UI_SCALES};
+use super::config::{self, Theme};
 use super::worker::{Command, Event, Worker};
 use super::{theme, widgets};
 
@@ -23,7 +23,11 @@ const TOGGLE_TIMEOUT: Duration = Duration::from_secs(3);
 const CONTENT_WIDTH: f32 = 424.0;
 const WINDOW_SIZE: [f32; 2] = [460.0, 560.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [420.0, 520.0];
-const LABEL_WIDTH: f32 = 90.0;
+const MIN_LABEL_WIDTH: f32 = 120.0;
+const MIN_AUTO_SCALE: f32 = 0.75;
+const MAX_AUTO_SCALE: f32 = 1.0;
+const SCREEN_MARGIN_X: f32 = 48.0;
+const SCREEN_MARGIN_Y: f32 = 96.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Tab {
@@ -58,6 +62,15 @@ struct SliderSpec<'a> {
     step: f64,
     decimals: usize,
     suffix: &'a str,
+}
+
+struct Confirmation<'a> {
+    id: &'a str,
+    title: Key,
+    question: Key,
+    text: Key,
+    confirm: Key,
+    solid: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -157,10 +170,9 @@ pub struct GuiApp {
     hotkey: String,
     hold_hotkey: String,
     recording: Option<RecordTarget>,
-    theme_mode: ThemeMode,
+    theme: Theme,
     language: Language,
     lang: Lang,
-    ui_scale: f32,
     applied_scale: Option<f32>,
     minimize_to_tray: bool,
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -230,10 +242,9 @@ impl GuiApp {
             hotkey: config.hotkey,
             hold_hotkey: config.hold_hotkey,
             recording: None,
-            theme_mode: config.theme,
+            theme: config.theme,
             language: config.language,
             lang,
-            ui_scale: config.ui_scale,
             applied_scale: None,
             minimize_to_tray: config.minimize_to_tray,
             start_hidden,
@@ -284,7 +295,14 @@ impl GuiApp {
             // natural redraw that would otherwise create the icon.
             app.sync_tray(&ctx);
             if app.start_hidden {
-                ctx.request_repaint();
+                if app.tray.is_some() {
+                    ctx.request_repaint();
+                } else {
+                    // The tray icon could not be created. Never leave a hidden
+                    // process without any way to open or close it.
+                    app.start_hidden = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                }
             }
 
             if !app.elevated {
@@ -531,9 +549,8 @@ impl GuiApp {
                 settings,
                 hotkey: self.hotkey.clone(),
                 hold_hotkey: self.hold_hotkey.clone(),
-                theme: self.theme_mode,
+                theme: self.theme,
                 language: self.language,
-                ui_scale: self.ui_scale,
                 minimize_to_tray: self.minimize_to_tray,
             })
     }
@@ -552,15 +569,25 @@ impl GuiApp {
         self.notice = None;
     }
 
-    fn toggle_theme(&mut self, ctx: &egui::Context) {
-        self.theme_mode = self.theme_mode.toggled();
-        theme::set_mode(ctx, self.theme_mode);
+    fn set_theme(&mut self, ctx: &egui::Context, theme: Theme) {
+        if theme == self.theme {
+            return;
+        }
+        self.theme = theme;
+        theme::set_theme(ctx, theme);
         self.save_config();
-        let label = match self.theme_mode {
-            ThemeMode::Light => self.t(Key::ThemeLight),
-            ThemeMode::Dark => self.t(Key::ThemeDark),
-        };
-        self.notice = Some(self.fill(Key::ThemeNotice, &[label.to_string()]));
+        self.notice = Some(self.fill(Key::ThemeNotice, &[self.theme_label(theme).to_string()]));
+    }
+
+    fn theme_label(&self, theme: Theme) -> &'static str {
+        self.t(match theme {
+            Theme::Paper => Key::ThemePaper,
+            Theme::Graphite => Key::ThemeGraphite,
+            Theme::Sand => Key::ThemeSand,
+            Theme::Ocean => Key::ThemeOcean,
+            Theme::Forest => Key::ThemeForest,
+            Theme::Contrast => Key::ThemeContrast,
+        })
     }
 
     fn set_language(&mut self, language: Language) {
@@ -572,13 +599,19 @@ impl GuiApp {
         self.save_config();
     }
 
-    fn apply_ui_scale(&mut self, ctx: &egui::Context) {
-        let scale = self.ui_scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE);
-        self.ui_scale = scale;
-        ctx.set_zoom_factor(scale);
+    fn apply_auto_scale(&mut self, ctx: &egui::Context) {
+        let Some(monitor) = ctx.input(|input| input.viewport().monitor_size) else {
+            return;
+        };
+        let scale = auto_scale_for(monitor, ctx.zoom_factor());
 
-        // The software backend sizes the window in logical points. Scale the
-        // outer window as well so the layout keeps its designed size.
+        if (scale - ctx.zoom_factor()).abs() > 0.001 {
+            ctx.set_zoom_factor(scale);
+        }
+
+        // The zoom factor changes how many winit logical pixels one egui point
+        // occupies. Scale the outer window as well so the layout still gets
+        // its designed 460x560 points after zooming.
         if self.applied_scale != Some(scale) {
             self.applied_scale = Some(scale);
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(
@@ -679,12 +712,10 @@ impl GuiApp {
         self.recording = None;
         self.hotkey = crate::hotkey::DEFAULT.to_string();
         self.hold_hotkey.clear();
-        self.theme_mode = ThemeMode::Light;
-        theme::set_mode(ctx, self.theme_mode);
+        self.theme = Theme::Paper;
+        theme::set_theme(ctx, self.theme);
         self.language = Language::Auto;
         self.lang = self.language.resolve();
-        self.ui_scale = 1.0;
-        self.apply_ui_scale(ctx);
         self.daemon_hotkey_error = None;
         self.last_hotkey_sync = Some(Instant::now());
         self.last_hold_hotkey_sync = Some(Instant::now());
@@ -703,7 +734,10 @@ impl GuiApp {
         if self.minimize_to_tray {
             if self.tray.is_none() {
                 match super::tray::Tray::start(ctx.clone(), self.lang) {
-                    Ok(tray) => self.tray = Some(tray),
+                    Ok(tray) => {
+                        self.tray = Some(tray);
+                        self.notice = Some(self.t(Key::TrayEnabled).to_string());
+                    }
                     Err(error) => {
                         self.minimize_to_tray = false;
                         self.notice = Some(self.fill(Key::TrayFailed, &[format!("{error:#}")]));
@@ -713,15 +747,6 @@ impl GuiApp {
             }
         } else {
             self.tray = None;
-        }
-    }
-
-    #[cfg(windows)]
-    fn handle_minimize(&mut self, ctx: &egui::Context) {
-        let minimized = ctx.input(|input| input.viewport().minimized.unwrap_or(false));
-        if minimized && self.minimize_to_tray && self.tray.is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         }
     }
 
@@ -923,8 +948,6 @@ impl GuiApp {
     }
 
     fn draw_topbar(&mut self, ui: &mut Ui) {
-        let mut toggle_theme = false;
-
         ui.horizontal(|ui| {
             let (mark, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
             ui.painter()
@@ -942,23 +965,22 @@ impl GuiApp {
                 if let Some(reason) = &self.offline_reason {
                     let _ = response.on_hover_text(reason);
                 }
-
-                let theme_label = if self.theme_mode == ThemeMode::Dark {
-                    self.t(Key::ThemeLight)
-                } else {
-                    self.t(Key::ThemeDark)
-                };
-                if widgets::theme_toggle(ui, self.theme_mode == ThemeMode::Dark, theme_label)
-                    .on_hover_text(self.t(Key::ToggleTheme))
-                    .clicked()
-                {
-                    toggle_theme = true;
-                }
             });
         });
+    }
 
-        if toggle_theme {
-            self.toggle_theme(ui.ctx());
+    fn stopped_hint(&self) -> &'static str {
+        #[cfg(windows)]
+        {
+            self.t(Key::HeroPressStart)
+        }
+        #[cfg(not(windows))]
+        {
+            if self.online {
+                self.t(Key::HeroPressStart)
+            } else {
+                self.t(Key::HeroDaemonAuto)
+            }
         }
     }
 
@@ -1017,12 +1039,7 @@ impl GuiApp {
         } else {
             (
                 self.t(Key::HeroStopped).to_string(),
-                if self.online {
-                    self.t(Key::HeroPressStart)
-                } else {
-                    self.t(Key::HeroDaemonAuto)
-                }
-                .to_string(),
+                self.stopped_hint().to_string(),
             )
         };
 
@@ -1182,7 +1199,7 @@ impl GuiApp {
             ui.add(
                 egui::Label::new(
                     RichText::new(self.t(Key::SequenceSpeedHint))
-                        .font(theme::sans(9.5))
+                        .font(theme::sans(10.0))
                         .color(theme::dim()),
                 )
                 .wrap(),
@@ -1299,7 +1316,7 @@ impl GuiApp {
         };
         ui.add_space(2.0);
         ui.add(
-            egui::Label::new(RichText::new(hint.1).font(theme::sans(9.5)).color(hint.0)).truncate(),
+            egui::Label::new(RichText::new(hint.1).font(theme::sans(10.0)).color(hint.0)).wrap(),
         );
 
         if changed {
@@ -1356,7 +1373,7 @@ impl GuiApp {
                 ui.add(
                     egui::Label::new(
                         RichText::new(self.t(reason))
-                            .font(theme::sans(9.5))
+                            .font(theme::sans(10.0))
                             .color(theme::warning()),
                     )
                     .wrap(),
@@ -1406,7 +1423,7 @@ impl GuiApp {
                     });
                     ui.label(
                         RichText::new(format!("{} / {}", draft.point_count(), MAX_POINTS))
-                            .font(theme::mono(8.5))
+                            .font(theme::mono(9.0))
                             .color(theme::dim()),
                     );
                 });
@@ -1417,7 +1434,7 @@ impl GuiApp {
                 ui.add(
                     egui::Label::new(
                         RichText::new(self.t(Key::PointsEmpty))
-                            .font(theme::sans(9.5))
+                            .font(theme::sans(10.0))
                             .color(theme::muted()),
                     )
                     .wrap(),
@@ -1428,6 +1445,7 @@ impl GuiApp {
                 let Some(mut point) = draft.point_at(index) else {
                     continue;
                 };
+                let original = point;
                 let active = self
                     .pipette
                     .as_ref()
@@ -1462,7 +1480,7 @@ impl GuiApp {
 
                         let remaining = ui.available_width();
                         ui.allocate_ui_with_layout(
-                            Vec2::new(remaining, 18.0),
+                            Vec2::new(remaining, 22.0),
                             Layout::left_to_right(Align::Center),
                             |ui| {
                                 changed |= widgets::coordinate_field(ui, &mut point.x, "X");
@@ -1472,7 +1490,7 @@ impl GuiApp {
                     });
                 });
 
-                if point != draft.point_at(index).unwrap_or(point) {
+                if point != original {
                     draft.set_point(index, point);
                     changed = true;
                 }
@@ -1488,7 +1506,7 @@ impl GuiApp {
 
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    let _ = row_label(ui, self.t(Key::RowCoords), self.t(Key::HintCoords), 20.0);
+                    let _ = row_label(ui, self.t(Key::RowCoords), self.t(Key::HintCoords), 22.0);
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_enabled_ui(blocked.is_none(), |ui| {
@@ -1500,7 +1518,7 @@ impl GuiApp {
                         });
                         let remaining = ui.available_width();
                         ui.allocate_ui_with_layout(
-                            Vec2::new(remaining, 18.0),
+                            Vec2::new(remaining, 22.0),
                             Layout::left_to_right(Align::Center),
                             |ui| {
                                 changed |= widgets::coordinate_field(ui, &mut point_value.x, "X");
@@ -1520,7 +1538,7 @@ impl GuiApp {
             ui.add(
                 egui::Label::new(
                     RichText::new(self.t(Key::CursorModeHint))
-                        .font(theme::sans(9.5))
+                        .font(theme::sans(10.0))
                         .color(theme::dim()),
                 )
                 .wrap(),
@@ -1552,7 +1570,7 @@ impl GuiApp {
         ui.add(
             egui::Label::new(
                 RichText::new(self.t(Key::MultiHint))
-                    .font(theme::sans(9.5))
+                    .font(theme::sans(10.0))
                     .color(theme::dim()),
             )
             .wrap(),
@@ -1612,51 +1630,20 @@ impl GuiApp {
 
         theme::rule(ui);
 
-        let mut toggle_theme = false;
+        let mut selected = self.theme;
         let _ = compact_choice_row(ui, self.t(Key::RowTheme), self.t(Key::HintTheme), |ui| {
-            let label = if self.theme_mode == ThemeMode::Dark {
-                self.t(Key::ThemeLight)
-            } else {
-                self.t(Key::ThemeDark)
-            };
-            let clicked =
-                widgets::theme_toggle(ui, self.theme_mode == ThemeMode::Dark, label).clicked();
-            if clicked {
-                toggle_theme = true;
-            }
-            clicked
+            egui::ComboBox::from_id_salt("theme")
+                .width(ui.available_width().min(190.0))
+                .selected_text(self.theme_label(selected))
+                .show_ui(ui, |ui| {
+                    for theme in Theme::ALL {
+                        ui.selectable_value(&mut selected, theme, self.theme_label(theme));
+                    }
+                });
+            false
         });
-        if toggle_theme {
-            self.toggle_theme(ui.ctx());
-        }
-
-        theme::rule(ui);
-
-        let mut scale = self.ui_scale;
-        let _ = compact_choice_row(
-            ui,
-            self.t(Key::RowUiScale),
-            self.t(Key::HintUiScale),
-            |ui| {
-                egui::ComboBox::from_id_salt("ui_scale")
-                    .width(ui.available_width().min(120.0))
-                    .selected_text(format!("{:.0}%", scale * 100.0))
-                    .show_ui(ui, |ui| {
-                        for preset in UI_SCALES {
-                            ui.selectable_value(
-                                &mut scale,
-                                preset,
-                                format!("{:.0}%", preset * 100.0),
-                            );
-                        }
-                    });
-                false
-            },
-        );
-        if (scale - self.ui_scale).abs() > f32::EPSILON {
-            self.ui_scale = scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE);
-            self.apply_ui_scale(ui.ctx());
-            self.save_config();
+        if selected != self.theme {
+            self.set_theme(ui.ctx(), selected);
         }
 
         theme::rule(ui);
@@ -1668,7 +1655,7 @@ impl GuiApp {
                 self.t(Key::RowAutostart),
                 self.t(Key::HintAutostart),
                 |ui| {
-                    ui.checkbox(&mut enabled, self.t(Key::Enabled));
+                    widgets::checkbox(ui, &mut enabled, self.t(Key::Enabled));
                     enabled != self.autostart_enabled
                 },
             );
@@ -1698,7 +1685,7 @@ impl GuiApp {
             ui.add(
                 egui::Label::new(
                     RichText::new(self.t(Key::AutostartHint))
-                        .font(theme::sans(9.5))
+                        .font(theme::sans(10.0))
                         .color(theme::dim()),
                 )
                 .wrap(),
@@ -1708,13 +1695,13 @@ impl GuiApp {
                 ui,
                 self.t(Key::RowAutostart),
                 self.t(Key::HintAutostart),
-                20.0,
+                22.0,
             );
             ui.add_space(3.0);
             ui.add(
                 egui::Label::new(
                     RichText::new(self.t(Key::AutostartUnavailable))
-                        .font(theme::sans(9.5))
+                        .font(theme::sans(10.0))
                         .color(theme::warning()),
                 )
                 .wrap(),
@@ -1730,7 +1717,7 @@ impl GuiApp {
                 self.t(Key::RowMinimizeTray),
                 self.t(Key::HintMinimizeTray),
                 |ui| {
-                    ui.checkbox(&mut tray, self.t(Key::Enabled));
+                    widgets::checkbox(ui, &mut tray, self.t(Key::Enabled));
                     tray != self.minimize_to_tray
                 },
             );
@@ -1750,7 +1737,7 @@ impl GuiApp {
             ui.add(
                 egui::Label::new(
                     RichText::new(self.t(Key::HintMinimizeTray))
-                        .font(theme::sans(9.5))
+                        .font(theme::sans(10.0))
                         .color(theme::dim()),
                 )
                 .wrap(),
@@ -1762,7 +1749,7 @@ impl GuiApp {
                 ui.add(
                     egui::Label::new(
                         RichText::new(self.t(Key::ElevationWarn))
-                            .font(theme::sans(9.5))
+                            .font(theme::sans(10.0))
                             .color(theme::warning()),
                     )
                     .wrap(),
@@ -1804,15 +1791,14 @@ impl GuiApp {
         }
     }
 
-    fn draw_defaults_confirmation(&mut self, ctx: &egui::Context) {
-        if !self.confirm_defaults {
-            return;
-        }
-
+    /// Shared layout for the two destructive confirmations. Returns
+    /// `Some(true)` for the primary action, `Some(false)` when the modal was
+    /// dismissed, and `None` while it stays open.
+    fn confirmation_modal(&self, ctx: &egui::Context, spec: Confirmation<'_>) -> Option<bool> {
         let mut close = false;
-        let mut restore = false;
+        let mut confirmed = false;
 
-        let modal = egui::Modal::new(egui::Id::new("restore_defaults"))
+        let modal = egui::Modal::new(egui::Id::new(spec.id))
             .backdrop_color(Color32::from_black_alpha(120))
             .frame(
                 Frame::new()
@@ -1825,20 +1811,20 @@ impl GuiApp {
             .show(ctx, |ui| {
                 ui.set_width(360.0);
                 ui.label(
-                    RichText::new(self.t(Key::DefaultsTitle))
-                        .font(theme::mono_medium(8.5))
+                    RichText::new(self.t(spec.title))
+                        .font(theme::mono_medium(9.0))
                         .color(theme::dim()),
                 );
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new(self.t(Key::DefaultsQuestion))
+                    RichText::new(self.t(spec.question))
                         .font(theme::sans_semibold(22.0))
                         .color(theme::text()),
                 );
                 ui.add_space(8.0);
                 ui.add(
                     egui::Label::new(
-                        RichText::new(self.t(Key::DefaultsText))
+                        RichText::new(self.t(spec.text))
                             .font(theme::sans(12.0))
                             .color(theme::muted()),
                     )
@@ -1847,15 +1833,23 @@ impl GuiApp {
                 ui.add_space(20.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if widgets::text_button(
-                            ui,
-                            self.t(Key::DefaultsConfirm),
-                            theme::danger(),
-                            theme::danger(),
-                        )
-                        .clicked()
-                        {
-                            restore = true;
+                        let response = if spec.solid {
+                            widgets::solid_button(
+                                ui,
+                                self.t(spec.confirm),
+                                theme::danger(),
+                                theme::panel(),
+                            )
+                        } else {
+                            widgets::text_button(
+                                ui,
+                                self.t(spec.confirm),
+                                theme::danger(),
+                                theme::danger(),
+                            )
+                        };
+                        if response.clicked() {
+                            confirmed = true;
                         }
                         if widgets::text_button(
                             ui,
@@ -1875,11 +1869,37 @@ impl GuiApp {
             close = true;
         }
 
-        if restore {
-            self.confirm_defaults = false;
-            self.restore_defaults(ctx);
+        if confirmed {
+            Some(true)
         } else if close {
-            self.confirm_defaults = false;
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    fn draw_defaults_confirmation(&mut self, ctx: &egui::Context) {
+        if !self.confirm_defaults {
+            return;
+        }
+
+        match self.confirmation_modal(
+            ctx,
+            Confirmation {
+                id: "restore_defaults",
+                title: Key::DefaultsTitle,
+                question: Key::DefaultsQuestion,
+                text: Key::DefaultsText,
+                confirm: Key::DefaultsConfirm,
+                solid: false,
+            },
+        ) {
+            Some(true) => {
+                self.confirm_defaults = false;
+                self.restore_defaults(ctx);
+            }
+            Some(false) => self.confirm_defaults = false,
+            None => {}
         }
     }
 
@@ -1907,7 +1927,7 @@ impl GuiApp {
                 ui,
                 self.t(Key::RowToggleHotkey),
                 self.t(Key::HintToggleHotkey),
-                20.0,
+                22.0,
             );
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1940,7 +1960,7 @@ impl GuiApp {
                 ui,
                 self.t(Key::RowHoldHotkey),
                 self.t(Key::HintHoldHotkey),
-                20.0,
+                22.0,
             );
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1990,7 +2010,9 @@ impl GuiApp {
             (theme::dim(), self.t(Key::HotkeyHint).to_string())
         };
         ui.add_space(6.0);
-        ui.add(egui::Label::new(RichText::new(hint.1).font(theme::sans(9.5)).color(hint.0)).wrap());
+        ui.add(
+            egui::Label::new(RichText::new(hint.1).font(theme::sans(10.0)).color(hint.0)).wrap(),
+        );
 
         if let Some(target) = start {
             if self.recording == Some(target) {
@@ -2007,7 +2029,7 @@ impl GuiApp {
         let bind = self.toggle_bind();
 
         ui.horizontal(|ui| {
-            let _ = row_label(ui, self.t(Key::RowGlobal), self.t(Key::HintGlobal), 20.0);
+            let _ = row_label(ui, self.t(Key::RowGlobal), self.t(Key::HintGlobal), 22.0);
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let response = ui.add(
@@ -2034,7 +2056,7 @@ impl GuiApp {
         ui.add(
             egui::Label::new(
                 RichText::new(self.t(Key::BindHint))
-                    .font(theme::sans(9.5))
+                    .font(theme::sans(10.0))
                     .color(theme::dim()),
             )
             .wrap(),
@@ -2043,7 +2065,7 @@ impl GuiApp {
         ui.add(
             egui::Label::new(
                 RichText::new(self.t(Key::HoldWindowsOnly))
-                    .font(theme::sans(9.5))
+                    .font(theme::sans(10.0))
                     .color(theme::dim()),
             )
             .wrap(),
@@ -2083,7 +2105,7 @@ impl GuiApp {
                 } else {
                     Key::DaemonStopped
                 }))
-                .font(theme::mono(8.5))
+                .font(theme::mono(9.0))
                 .color(theme::muted()),
             );
             if let Some(reason) = &self.offline_reason {
@@ -2093,7 +2115,7 @@ impl GuiApp {
             ui.add_space(3.0);
             ui.label(
                 RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                    .font(theme::mono(8.0))
+                    .font(theme::mono(8.5))
                     .color(theme::dim()),
             );
 
@@ -2124,77 +2146,23 @@ impl GuiApp {
             return;
         }
 
-        let mut close = false;
-        let mut quit = false;
-
-        let modal = egui::Modal::new(egui::Id::new("quit_daemon"))
-            .backdrop_color(Color32::from_black_alpha(120))
-            .frame(
-                Frame::new()
-                    .fill(theme::panel())
-                    .stroke(Stroke::new(1.0_f32, theme::line()))
-                    .corner_radius(CornerRadius::same(16))
-                    .inner_margin(Margin::same(24))
-                    .shadow(theme::shadow()),
-            )
-            .show(ctx, |ui| {
-                ui.set_width(360.0);
-                ui.label(
-                    RichText::new(self.t(Key::QuitTitle))
-                        .font(theme::mono_medium(8.5))
-                        .color(theme::dim()),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(self.t(Key::QuitQuestion))
-                        .font(theme::sans_semibold(22.0))
-                        .color(theme::text()),
-                );
-                ui.add_space(8.0);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(self.t(Key::QuitText))
-                            .font(theme::sans(12.0))
-                            .color(theme::muted()),
-                    )
-                    .wrap(),
-                );
-                ui.add_space(20.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if widgets::solid_button(
-                            ui,
-                            self.t(Key::QuitConfirm),
-                            theme::danger(),
-                            theme::panel(),
-                        )
-                        .clicked()
-                        {
-                            quit = true;
-                        }
-                        if widgets::text_button(
-                            ui,
-                            self.t(Key::Cancel),
-                            theme::muted(),
-                            theme::text(),
-                        )
-                        .clicked()
-                        {
-                            close = true;
-                        }
-                    });
-                });
-            });
-
-        if modal.should_close() {
-            close = true;
-        }
-
-        if quit {
-            self.confirm_quit = false;
-            self.request_quit();
-        } else if close {
-            self.confirm_quit = false;
+        match self.confirmation_modal(
+            ctx,
+            Confirmation {
+                id: "quit_daemon",
+                title: Key::QuitTitle,
+                question: Key::QuitQuestion,
+                text: Key::QuitText,
+                confirm: Key::QuitConfirm,
+                solid: true,
+            },
+        ) {
+            Some(true) => {
+                self.confirm_quit = false;
+                self.request_quit();
+            }
+            Some(false) => self.confirm_quit = false,
+            None => {}
         }
     }
 }
@@ -2207,7 +2175,7 @@ impl egui_software_backend::App for GuiApp {
             self.save_config();
         }
 
-        self.apply_ui_scale(ui.ctx());
+        self.apply_auto_scale(ui.ctx());
         #[cfg(windows)]
         self.sync_tray(ui.ctx());
         #[cfg(windows)]
@@ -2221,8 +2189,6 @@ impl egui_software_backend::App for GuiApp {
             }
         }
         self.poll_pipette(ui.ctx());
-        #[cfg(windows)]
-        self.handle_minimize(ui.ctx());
 
         self.capture_hotkey(ui.ctx());
         self.drain_events(ui.ctx());
@@ -2354,23 +2320,32 @@ fn load_icon() -> Option<egui::IconData> {
     })
 }
 
+fn auto_scale_for(monitor_size: Vec2, zoom_factor: f32) -> f32 {
+    // `monitor_size` is reported in egui points at the current zoom level.
+    // Convert it back to the unscaled logical size so the result does not
+    // depend on the scale we already applied.
+    let logical = monitor_size * zoom_factor;
+    if !logical.is_finite() || logical.x <= 0.0 || logical.y <= 0.0 {
+        return MAX_AUTO_SCALE;
+    }
+
+    let fit = ((logical.x - SCREEN_MARGIN_X) / WINDOW_SIZE[0])
+        .min((logical.y - SCREEN_MARGIN_Y) / WINDOW_SIZE[1])
+        .min(MAX_AUTO_SCALE);
+    fit.clamp(MIN_AUTO_SCALE, MAX_AUTO_SCALE)
+}
+
 fn row_label(ui: &mut Ui, title: &str, hint: &str, height: f32) -> egui::Response {
-    let response = ui
-        .allocate_ui_with_layout(
-            Vec2::new(LABEL_WIDTH, height),
-            Layout::left_to_right(Align::Center),
-            |ui| {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(title)
-                            .font(theme::sans_medium(12.0))
-                            .color(theme::text()),
-                    )
-                    .truncate(),
-                )
-            },
-        )
-        .inner;
+    let galley =
+        ui.painter()
+            .layout_no_wrap(title.to_owned(), theme::sans_medium(12.5), theme::text());
+    let width = (galley.size().x.ceil() + 2.0).max(MIN_LABEL_WIDTH);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    ui.painter().galley(
+        egui::pos2(rect.left(), rect.center().y - galley.size().y * 0.5),
+        galley,
+        theme::text(),
+    );
     response.on_hover_text(hint)
 }
 
@@ -2385,12 +2360,12 @@ fn compact_slider_row(
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let _ = row_label(ui, title, hint, 18.0);
+        let _ = row_label(ui, title, hint, 22.0);
 
-        let field_width = widgets::numeric_row_width(ui, &spec.range, spec.decimals, spec.suffix);
+        let field_width = widgets::numeric_row_width(ui, spec.suffix);
         let slider_width = (ui.available_width() - field_width).max(60.0);
         ui.allocate_ui_with_layout(
-            Vec2::new(slider_width, 18.0),
+            Vec2::new(slider_width, 22.0),
             Layout::left_to_right(Align::Center),
             |ui| {
                 ui.spacing_mut().slider_width = slider_width;
@@ -2432,7 +2407,7 @@ fn compact_integer_row(
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let _ = row_label(ui, title, hint, 18.0);
+        let _ = row_label(ui, title, hint, 22.0);
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             changed |= widgets::integer_field(ui, value, range, 1.0, suffix);
@@ -2577,4 +2552,32 @@ fn settings_equivalent(left: &Settings, right: &Settings) -> bool {
         && (left.hold_ms() - right.hold_ms()).abs() < 0.001
         && (left.jitter_pct - right.jitter_pct).abs() < 0.001
         && (left.delay_ms() - right.delay_ms()).abs() < 0.001
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scale(monitor: Vec2) -> f32 {
+        auto_scale_for(monitor, 1.0)
+    }
+
+    #[test]
+    fn automatic_scale_fits_the_screen() {
+        assert!((scale(Vec2::new(1920.0, 1080.0)) - 1.0).abs() < 0.001);
+        assert!((scale(Vec2::new(1366.0, 768.0)) - 1.0).abs() < 0.001);
+        assert!((scale(Vec2::new(1092.0, 614.0)) - 0.925).abs() < 0.001);
+        assert!((scale(Vec2::new(910.0, 512.0)) - 0.75).abs() < 0.001);
+    }
+
+    #[test]
+    fn automatic_scale_is_stable_after_zooming() {
+        let unscaled = Vec2::new(910.0, 512.0);
+        let first = auto_scale_for(unscaled, 1.0);
+        assert!((first - 0.75).abs() < 0.001);
+
+        // At 75% zoom the viewport reports the monitor in smaller points.
+        let reported = unscaled / first;
+        assert!((auto_scale_for(reported, first) - first).abs() < 0.001);
+    }
 }

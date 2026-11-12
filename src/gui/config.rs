@@ -9,37 +9,68 @@ use crate::hotkey::{DEFAULT as DEFAULT_HOTKEY, Hotkey};
 use crate::i18n::Language;
 use crate::state::{Button, ClickMode, DEFAULT_POINT_INTERVAL_MS, Point, Settings};
 
-pub const MIN_UI_SCALE: f32 = 0.8;
-pub const MAX_UI_SCALE: f32 = 1.5;
-pub const UI_SCALES: [f32; 6] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5];
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThemeMode {
-    Light,
-    Dark,
+pub enum Theme {
+    Paper,
+    Graphite,
+    Sand,
+    Ocean,
+    Forest,
+    Contrast,
 }
 
-impl ThemeMode {
+impl Theme {
+    pub const ALL: [Self; 6] = [
+        Self::Paper,
+        Self::Graphite,
+        Self::Sand,
+        Self::Ocean,
+        Self::Forest,
+        Self::Contrast,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Light => "light",
-            Self::Dark => "dark",
+            Self::Paper => "paper",
+            Self::Graphite => "graphite",
+            Self::Sand => "sand",
+            Self::Ocean => "ocean",
+            Self::Forest => "forest",
+            Self::Contrast => "contrast",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_lowercase().as_str() {
-            "light" | "светлая" => Some(Self::Light),
-            "dark" | "тёмная" | "темная" => Some(Self::Dark),
+            "paper" | "light" | "светлая" | "бумага" => Some(Self::Paper),
+            "graphite" | "dark" | "тёмная" | "темная" | "графит" => {
+                Some(Self::Graphite)
+            }
+            "sand" | "песок" => Some(Self::Sand),
+            "ocean" | "океан" => Some(Self::Ocean),
+            "forest" | "лес" => Some(Self::Forest),
+            "contrast" | "контраст" => Some(Self::Contrast),
             _ => None,
         }
     }
 
-    pub fn toggled(self) -> Self {
+    pub fn index(self) -> usize {
         match self {
-            Self::Light => Self::Dark,
-            Self::Dark => Self::Light,
+            Self::Paper => 0,
+            Self::Graphite => 1,
+            Self::Sand => 2,
+            Self::Ocean => 3,
+            Self::Forest => 4,
+            Self::Contrast => 5,
         }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL[index.min(Self::ALL.len() - 1)]
+    }
+
+    pub fn is_dark(self) -> bool {
+        matches!(self, Self::Graphite | Self::Ocean | Self::Forest)
     }
 }
 
@@ -48,9 +79,8 @@ pub struct Config {
     pub settings: Settings,
     pub hotkey: String,
     pub hold_hotkey: String,
-    pub theme: ThemeMode,
+    pub theme: Theme,
     pub language: Language,
-    pub ui_scale: f32,
     pub minimize_to_tray: bool,
 }
 
@@ -109,8 +139,6 @@ struct PersistedSettings {
     theme: String,
     #[serde(default = "default_language")]
     language: String,
-    #[serde(default = "default_ui_scale")]
-    ui_scale: f32,
     #[serde(default)]
     minimize_to_tray: bool,
 }
@@ -139,7 +167,6 @@ impl PersistedSettings {
             hold_hotkey: config.hold_hotkey.clone(),
             theme: config.theme.as_str().to_string(),
             language: config.language.as_str().to_string(),
-            ui_scale: config.ui_scale,
             minimize_to_tray: config.minimize_to_tray,
         }
     }
@@ -150,7 +177,7 @@ fn default_hotkey() -> String {
 }
 
 fn default_theme() -> String {
-    ThemeMode::Light.as_str().to_string()
+    Theme::Paper.as_str().to_string()
 }
 
 fn default_multi_click() -> u8 {
@@ -159,10 +186,6 @@ fn default_multi_click() -> u8 {
 
 fn default_point_interval() -> u32 {
     DEFAULT_POINT_INTERVAL_MS
-}
-
-fn default_ui_scale() -> f32 {
-    1.0
 }
 
 fn default_language() -> String {
@@ -174,9 +197,8 @@ pub fn load() -> Loaded {
         settings: Settings::default(),
         hotkey: default_hotkey(),
         hold_hotkey: String::new(),
-        theme: ThemeMode::Light,
+        theme: Theme::Paper,
         language: Language::Auto,
-        ui_scale: 1.0,
         minimize_to_tray: false,
     };
 
@@ -272,11 +294,11 @@ pub fn load() -> Loaded {
         }
     };
 
-    let theme = match ThemeMode::parse(&persisted.theme) {
+    let theme = match Theme::parse(&persisted.theme) {
         Some(theme) => theme,
         None => {
-            warnings.push(format!("Unknown theme `{}`. Using light.", persisted.theme));
-            ThemeMode::Light
+            warnings.push(format!("Unknown theme `{}`. Using paper.", persisted.theme));
+            Theme::Paper
         }
     };
 
@@ -291,13 +313,6 @@ pub fn load() -> Loaded {
         }
     };
 
-    let ui_scale = if persisted.ui_scale.is_finite() {
-        persisted.ui_scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE)
-    } else {
-        warnings.push("Invalid UI scale. Using 100%.".to_string());
-        1.0
-    };
-
     Loaded {
         config: Config {
             settings,
@@ -305,7 +320,6 @@ pub fn load() -> Loaded {
             hold_hotkey,
             theme,
             language,
-            ui_scale,
             minimize_to_tray: persisted.minimize_to_tray,
         },
         warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
@@ -440,9 +454,8 @@ mod tests {
                 .unwrap(),
             hotkey: "f8".to_string(),
             hold_hotkey: "alt+space".to_string(),
-            theme: ThemeMode::Dark,
+            theme: Theme::Graphite,
             language: Language::De,
-            ui_scale: 1.25,
             minimize_to_tray: true,
         }
     }
@@ -455,16 +468,16 @@ mod tests {
 
         assert_eq!(parsed.hotkey, "f8");
         assert_eq!(parsed.hold_hotkey, "alt+space");
-        assert_eq!(parsed.theme, "dark");
+        assert_eq!(parsed.theme, "graphite");
         assert_eq!(parsed.language, "de");
         assert_eq!(parsed.multi_click, 2);
         assert_eq!(parsed.mode, "sequence");
         assert_eq!(parsed.points.len(), 2);
         assert_eq!(parsed.point_interval_ms, 175);
-        assert!((parsed.ui_scale - 1.25).abs() < 1e-6);
         assert!(parsed.minimize_to_tray);
         assert!(!text.contains("profiles"));
         assert!(!text.contains("active_profile"));
+        assert!(!text.contains("ui_scale"));
 
         let settings = parse(&text).unwrap();
         assert_eq!(settings.limit, 500);
@@ -489,6 +502,14 @@ mod tests {
     }
 
     #[test]
+    fn legacy_ui_scale_is_ignored() {
+        let text = "cps = 50\nbutton = \"left\"\nhold_ms = 10\njitter_pct = 0\nui_scale = 0.8\n";
+        let persisted: PersistedSettings = toml::from_str(text).unwrap();
+        assert_eq!(persisted.theme, "paper");
+        assert!(parse(text).is_ok());
+    }
+
+    #[test]
     fn legacy_target_without_mode_becomes_point_mode() {
         let settings = parse(
             "cps = 50\nbutton = \"left\"\nhold_ms = 10\njitter_pct = 0\ntarget = { x = 5, y = -6 }\n",
@@ -510,7 +531,7 @@ mod tests {
     fn legacy_profile_fields_are_ignored() {
         let text = "cps = 100\nbutton = \"right\"\nhold_ms = 8\njitter_pct = 0\nhotkey = \"f8\"\nactive_profile = \"Точный\"\n[[profiles]]\nname = \"Точный\"\ncps = 10.0\nbutton = \"left\"\nhold_ms = 40.0\njitter_pct = 0.0\n";
         let persisted: PersistedSettings = toml::from_str(text).unwrap();
-        assert_eq!(persisted.theme, "light");
+        assert_eq!(persisted.theme, "paper");
         assert_eq!(persisted.hold_hotkey, "");
 
         let settings = parse(text).unwrap();
@@ -520,9 +541,12 @@ mod tests {
 
     #[test]
     fn theme_aliases_round_trip() {
-        assert_eq!(ThemeMode::parse("Тёмная"), Some(ThemeMode::Dark));
-        assert_eq!(ThemeMode::parse("LIGHT"), Some(ThemeMode::Light));
-        assert_eq!(ThemeMode::parse("neon"), None);
-        assert_eq!(ThemeMode::Light.toggled(), ThemeMode::Dark);
+        assert_eq!(Theme::parse("Тёмная"), Some(Theme::Graphite));
+        assert_eq!(Theme::parse("LIGHT"), Some(Theme::Paper));
+        assert_eq!(Theme::parse("dark"), Some(Theme::Graphite));
+        assert_eq!(Theme::parse("neon"), None);
+        assert_eq!(Theme::Paper.as_str(), "paper");
+        assert_eq!(Theme::Graphite.as_str(), "graphite");
+        assert_eq!(Theme::from_index(Theme::Contrast.index()), Theme::Contrast);
     }
 }

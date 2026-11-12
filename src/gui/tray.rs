@@ -1,15 +1,25 @@
 //! Native Windows tray icon. The GUI cannot intercept close requests with the
 //! software backend, so "minimize to tray" hides the window when Windows
 //! reports it as minimized and restores it from this icon.
+//!
+//! The tray thread also polls the GUI window with a Win32 timer. This does not
+//! depend on egui receiving another repaint after the window has been
+//! minimized, which is not guaranteed by the software backend.
 
+use std::cell::RefCell;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::mem::size_of;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, bail};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{
+    ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
@@ -17,20 +27,23 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, HWND_MESSAGE, IDI_APPLICATION,
-    LoadIconW, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
-    SW_RESTORE, SetForegroundWindow, ShowWindow, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD,
-    TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_COMMAND,
-    WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASS_STYLES, WNDCLASSW,
-    WS_POPUP,
+    DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, HICON, HWND_MESSAGE, IDI_APPLICATION,
+    IsIconic, IsWindow, KillTimer, LoadIconW, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
+    PostQuitMessage, RegisterClassW, SW_HIDE, SW_RESTORE, SetForegroundWindow, SetTimer,
+    ShowWindow, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TrackPopupMenu, TranslateMessage,
+    WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK,
+    WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER, WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPED,
 };
 use windows::core::PCWSTR;
 
 use crate::i18n::{Key, Lang};
 
 const WINDOW_TITLE: &str = "SAVV-AutoClicker";
+const TRAY_CLASS: &str = "SAVV-AutoClickerTray";
 const TRAY_ID: u32 = 1;
 const TRAY_CALLBACK: u32 = WM_APP + 1;
+const TRAY_TIMER: usize = 1;
+const TRAY_POLL_MS: u32 = 200;
 const MENU_SHOW: usize = 1;
 const MENU_EXIT: usize = 2;
 
@@ -38,6 +51,16 @@ struct TrayState {
     id: u64,
     ctx: egui::Context,
     lang: Lang,
+}
+
+#[derive(Default)]
+struct TrayRuntime {
+    gui: Option<HWND>,
+    hidden: bool,
+}
+
+thread_local! {
+    static RUNTIME: RefCell<TrayRuntime> = RefCell::new(TrayRuntime::default());
 }
 
 static STATE: Mutex<Option<TrayState>> = Mutex::new(None);
@@ -60,22 +83,29 @@ impl Tray {
         }
 
         let (sender, receiver) = mpsc::channel();
-        thread::Builder::new()
+        let spawned = thread::Builder::new()
             .name("savv-autoclicker-tray".to_string())
             .spawn(move || {
                 if let Err(error) = run(sender, id) {
-                    eprintln!("savv-autoclicker: tray error: {error:#}");
+                    log_error(format!("tray thread: {error:#}"));
                 }
-            })?;
+            });
+        if let Err(error) = spawned {
+            clear_state(id);
+            log_error(format!("could not start the tray thread: {error}"));
+            return Err(error.into());
+        }
 
         match receiver.recv_timeout(Duration::from_secs(3)) {
             Ok(Ok(hwnd)) => Ok(Self { hwnd, id }),
             Ok(Err(error)) => {
                 clear_state(id);
+                log_error(format!("tray start: {error:#}"));
                 Err(error)
             }
-            Err(_) => {
+            Err(error) => {
                 clear_state(id);
+                log_error(format!("tray start timed out: {error}"));
                 bail!("the tray icon did not start")
             }
         }
@@ -114,7 +144,7 @@ pub fn set_language(lang: Lang) {
 type StartResult = std::result::Result<isize, anyhow::Error>;
 
 fn run(sender: mpsc::Sender<StartResult>, id: u64) -> Result<()> {
-    let class_name = wide("SAVV-AutoClickerTray");
+    let class_name = wide(TRAY_CLASS);
     let module = unsafe { GetModuleHandleW(None) }?;
 
     let class = WNDCLASSW {
@@ -123,7 +153,7 @@ fn run(sender: mpsc::Sender<StartResult>, id: u64) -> Result<()> {
         cbClsExtra: 0,
         cbWndExtra: 0,
         hInstance: HINSTANCE(module.0),
-        hIcon: unsafe { LoadIconW(None, IDI_APPLICATION).unwrap_or_default() },
+        hIcon: load_app_icon(),
         hCursor: Default::default(),
         hbrBackground: HBRUSH::default(),
         lpszMenuName: PCWSTR::null(),
@@ -132,10 +162,15 @@ fn run(sender: mpsc::Sender<StartResult>, id: u64) -> Result<()> {
 
     let atom = unsafe { RegisterClassW(&class) };
     if atom == 0 {
-        clear_state(id);
         let error = std::io::Error::last_os_error();
-        let _ = sender.send(Err(anyhow::anyhow!("RegisterClassW failed: {error}")));
-        return Ok(());
+        let already_exists = error.raw_os_error() == Some(ERROR_CLASS_ALREADY_EXISTS.0 as i32);
+        if !already_exists {
+            clear_state(id);
+            let message = format!("RegisterClassW failed: {error}");
+            log_error(&message);
+            let _ = sender.send(Err(anyhow::anyhow!(message)));
+            return Ok(());
+        }
     }
 
     let created = unsafe {
@@ -143,7 +178,7 @@ fn run(sender: mpsc::Sender<StartResult>, id: u64) -> Result<()> {
             WINDOW_EX_STYLE(0),
             PCWSTR(class_name.as_ptr()),
             PCWSTR(class_name.as_ptr()),
-            WS_POPUP,
+            WS_OVERLAPPED,
             0,
             0,
             0,
@@ -159,13 +194,9 @@ fn run(sender: mpsc::Sender<StartResult>, id: u64) -> Result<()> {
         Ok(hwnd) => hwnd,
         Err(error) => {
             clear_state(id);
-            let _ = sender.send(Err(anyhow::anyhow!("CreateWindowExW failed: {error}")));
-            unsafe {
-                let _ = windows::Win32::UI::WindowsAndMessaging::UnregisterClassW(
-                    PCWSTR(class_name.as_ptr()),
-                    Some(HINSTANCE(module.0)),
-                );
-            }
+            let message = format!("CreateWindowExW failed: {error}");
+            log_error(&message);
+            let _ = sender.send(Err(anyhow::anyhow!(message)));
             return Ok(());
         }
     };
@@ -175,14 +206,19 @@ fn run(sender: mpsc::Sender<StartResult>, id: u64) -> Result<()> {
         let error = std::io::Error::last_os_error();
         unsafe {
             let _ = DestroyWindow(hwnd);
-            let _ = windows::Win32::UI::WindowsAndMessaging::UnregisterClassW(
-                PCWSTR(class_name.as_ptr()),
-                Some(HINSTANCE(module.0)),
-            );
         }
         clear_state(id);
-        let _ = sender.send(Err(anyhow::anyhow!("Shell_NotifyIconW failed: {error}")));
+        let message = format!("Shell_NotifyIconW failed: {error}");
+        log_error(&message);
+        let _ = sender.send(Err(anyhow::anyhow!(message)));
         return Ok(());
+    }
+
+    if unsafe { SetTimer(Some(hwnd), TRAY_TIMER, TRAY_POLL_MS, None) } == 0 {
+        log_error(format!(
+            "SetTimer failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
     let _ = sender.send(Ok(hwnd.0 as isize));
@@ -202,13 +238,27 @@ fn run(sender: mpsc::Sender<StartResult>, id: u64) -> Result<()> {
     let data = notify_data(hwnd);
     unsafe {
         let _ = Shell_NotifyIconW(NIM_DELETE, &data);
-        let _ = windows::Win32::UI::WindowsAndMessaging::UnregisterClassW(
-            PCWSTR(class_name.as_ptr()),
-            Some(HINSTANCE(module.0)),
-        );
     }
     clear_state(id);
     Ok(())
+}
+
+fn load_app_icon() -> HICON {
+    if let Ok(module) = unsafe { GetModuleHandleW(None) } {
+        // winresource embeds the application icon as resource id 1.
+        if let Ok(icon) = unsafe {
+            LoadIconW(
+                Some(HINSTANCE(module.0)),
+                PCWSTR(std::ptr::without_provenance(1)),
+            )
+        } {
+            if !icon.is_invalid() {
+                return icon;
+            }
+        }
+    }
+
+    unsafe { LoadIconW(None, IDI_APPLICATION).unwrap_or_default() }
 }
 
 fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
@@ -220,7 +270,7 @@ fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
     };
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = TRAY_CALLBACK;
-    data.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION).unwrap_or_default() };
+    data.hIcon = load_app_icon();
 
     let tip: Vec<u16> = WINDOW_TITLE.encode_utf16().collect();
     let length = tip.len().min(data.szTip.len() - 1);
@@ -237,10 +287,14 @@ unsafe extern "system" fn window_proc(
     match message {
         TRAY_CALLBACK => {
             match lparam.0 as u32 & 0xffff {
-                WM_LBUTTONDBLCLK => show_window(),
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK => show_window(),
                 WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
                 _ => {}
             }
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            poll_minimized();
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -252,8 +306,9 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_CLOSE => {
-            let data = notify_data(hwnd);
             unsafe {
+                let _ = KillTimer(Some(hwnd), TRAY_TIMER);
+                let data = notify_data(hwnd);
                 let _ = Shell_NotifyIconW(NIM_DELETE, &data);
                 let _ = DestroyWindow(hwnd);
             }
@@ -313,14 +368,60 @@ fn show_menu(hwnd: HWND) {
     }
 }
 
-fn show_window() {
+fn find_gui_window() -> Option<HWND> {
     let title = wide(WINDOW_TITLE);
-    if let Ok(hwnd) = unsafe { FindWindowW(PCWSTR::null(), PCWSTR(title.as_ptr())) } {
+    unsafe { FindWindowW(PCWSTR::null(), PCWSTR(title.as_ptr())).ok() }
+}
+
+fn cached_gui_window() -> Option<HWND> {
+    let cached = RUNTIME.with(|runtime| runtime.borrow().gui);
+    if let Some(hwnd) = cached {
+        if unsafe { IsWindow(Some(hwnd)).as_bool() } {
+            return Some(hwnd);
+        }
+    }
+
+    let found = find_gui_window();
+    RUNTIME.with(|runtime| {
+        let mut runtime = runtime.borrow_mut();
+        runtime.gui = found;
+        if found.is_none() {
+            runtime.hidden = false;
+        }
+    });
+    found
+}
+
+fn poll_minimized() {
+    let Some(hwnd) = cached_gui_window() else {
+        return;
+    };
+    if RUNTIME.with(|runtime| runtime.borrow().hidden) {
+        return;
+    }
+
+    if unsafe { IsIconic(hwnd).as_bool() } {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+        RUNTIME.with(|runtime| runtime.borrow_mut().hidden = true);
+    }
+}
+
+fn show_window() {
+    let hwnd = cached_gui_window().or_else(find_gui_window);
+    if let Some(hwnd) = hwnd {
         unsafe {
             let _ = ShowWindow(hwnd, SW_RESTORE);
             let _ = SetForegroundWindow(hwnd);
         }
     }
+
+    RUNTIME.with(|runtime| {
+        let mut runtime = runtime.borrow_mut();
+        runtime.gui = hwnd;
+        runtime.hidden = false;
+    });
 
     if let Some(state) = STATE.lock().unwrap().as_ref() {
         state
@@ -334,12 +435,34 @@ fn show_window() {
 }
 
 fn exit_window() {
-    let title = wide(WINDOW_TITLE);
-    if let Ok(hwnd) = unsafe { FindWindowW(PCWSTR::null(), PCWSTR(title.as_ptr())) } {
+    if let Some(hwnd) = cached_gui_window().or_else(find_gui_window) {
         unsafe {
             let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
     }
+}
+
+fn log_error(message: impl AsRef<str>) {
+    let Some(appdata) = std::env::var_os("APPDATA") else {
+        return;
+    };
+    let directory = PathBuf::from(appdata).join("SAVV-AutoClicker");
+    if std::fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+
+    let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("tray.log"))
+    else {
+        return;
+    };
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(file, "[{timestamp}] {}", message.as_ref());
 }
 
 fn wide(value: &str) -> Vec<u16> {

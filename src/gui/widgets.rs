@@ -1,15 +1,19 @@
 use egui::{
     self, Align, Color32, CornerRadius, CursorIcon, Layout, Painter, Pos2, Rect, Response,
-    RichText, Sense, Shape, Stroke, TextStyle, Ui, Vec2, pos2, vec2,
+    RichText, Sense, Shape, Stroke, TextStyle, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 use super::theme;
+
+pub const FIELD_WIDTH: f32 = 96.0;
+pub const FIELD_HEIGHT: f32 = 22.0;
+const FIELD_PADDING: f32 = 4.0;
 
 pub fn status_badge(ui: &mut Ui, text: &str, dot: Color32, pulse: bool) -> Response {
     let text_color = if pulse { theme::text() } else { theme::muted() };
     let galley = ui
         .painter()
-        .layout_no_wrap(text.to_owned(), theme::mono_medium(8.5), text_color);
+        .layout_no_wrap(text.to_owned(), theme::mono_medium(9.0), text_color);
     let size = Vec2::new(galley.size().x + 16.0, 20.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
 
@@ -186,7 +190,7 @@ pub fn segmented<T: Copy + PartialEq>(
         } else {
             theme::muted()
         };
-        let galley = painter.layout_no_wrap((*label).to_owned(), theme::mono_medium(8.5), color);
+        let galley = painter.layout_no_wrap((*label).to_owned(), theme::mono_medium(9.0), color);
         let text_pos = pos2(
             segment.center().x - galley.size().x * 0.5,
             segment.center().y - galley.size().y * 0.5,
@@ -291,40 +295,30 @@ fn paint_field_background(ui: &Ui, rect: Rect, hovered: bool) {
     }
 }
 
-fn field_text_width(ui: &Ui, text: String) -> f32 {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text, theme::mono_medium(12.0), theme::text());
-    (galley.size().x + 16.0).max(54.0)
-}
-
 fn suffix_width(ui: &Ui, suffix: &str) -> f32 {
     ui.painter()
-        .layout_no_wrap(suffix.to_owned(), theme::mono_medium(8.0), theme::dim())
+        .layout_no_wrap(suffix.to_owned(), theme::mono_medium(9.0), theme::dim())
         .size()
         .x
 }
 
 /// Total width of a numeric field plus its unit label, so the slider row can
-/// reserve enough space for the largest value without clipping digits.
-pub fn numeric_row_width(
-    ui: &Ui,
-    range: &std::ops::RangeInclusive<f64>,
-    decimals: usize,
-    suffix: &str,
-) -> f32 {
-    field_text_width(ui, format!("{:.*}", decimals, range.end())) + suffix_width(ui, suffix) + 5.0
+/// reserve enough space without clipping the field.
+pub fn numeric_row_width(ui: &Ui, suffix: &str) -> f32 {
+    FIELD_WIDTH + suffix_width(ui, suffix) + 5.0
 }
 
-fn configure_field_child(ui: &mut Ui, rect: Rect, inner_width: f32) -> Ui {
+fn configure_field_child(ui: &mut Ui, rect: Rect) -> Ui {
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
             .layout(Layout::right_to_left(Align::Center)),
     );
     child.style_mut().override_text_style = Some(TextStyle::Monospace);
-    child.style_mut().override_font_id = Some(theme::mono_medium(12.0));
-    child.spacing_mut().interact_size = Vec2::new(inner_width, 18.0);
+    child.style_mut().override_font_id = Some(theme::mono_medium(12.5));
+    child.spacing_mut().interact_size =
+        Vec2::new(FIELD_WIDTH - 2.0 * FIELD_PADDING, FIELD_HEIGHT - 2.0);
+    child.spacing_mut().button_padding = Vec2::new(FIELD_PADDING, 1.0);
     child.visuals_mut().extreme_bg_color = theme::panel();
     child.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     child.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
@@ -335,6 +329,32 @@ fn configure_field_child(ui: &mut Ui, rect: Rect, inner_width: f32) -> Ui {
     child
 }
 
+fn add_field(
+    ui: &mut Ui,
+    suffix: &str,
+    value: impl egui::widgets::Widget,
+    item_spacing: f32,
+) -> bool {
+    ui.spacing_mut().item_spacing.x = item_spacing;
+    ui.label(
+        RichText::new(suffix)
+            .font(theme::mono_medium(9.0))
+            .color(theme::dim()),
+    );
+
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(FIELD_WIDTH, FIELD_HEIGHT), Sense::hover());
+    let hovered = ui.rect_contains_pointer(rect);
+    paint_field_background(ui, rect, hovered);
+
+    let mut child = configure_field_child(ui, rect);
+    child
+        .add_sized(
+            Vec2::new(FIELD_WIDTH - 2.0 * FIELD_PADDING, FIELD_HEIGHT - 2.0),
+            value,
+        )
+        .changed()
+}
+
 pub fn numeric_field(
     ui: &mut Ui,
     value: &mut f64,
@@ -343,28 +363,15 @@ pub fn numeric_field(
     decimals: usize,
     suffix: &str,
 ) -> bool {
-    ui.spacing_mut().item_spacing.x = 5.0;
-    ui.label(
-        RichText::new(suffix)
-            .font(theme::mono_medium(8.0))
-            .color(theme::dim()),
-    );
-
-    let width = field_text_width(ui, format!("{:.*}", decimals, range.end()));
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
-    let hovered = ui.rect_contains_pointer(rect);
-    paint_field_background(ui, rect, hovered);
-
-    let mut child = configure_field_child(ui, rect, width - 4.0);
-    child
-        .add_sized(
-            Vec2::new(width - 4.0, 18.0),
-            egui::DragValue::new(value)
-                .range(range)
-                .speed(speed)
-                .max_decimals(decimals),
-        )
-        .changed()
+    add_field(
+        ui,
+        suffix,
+        egui::DragValue::new(value)
+            .range(range)
+            .speed(speed)
+            .max_decimals(decimals),
+        5.0,
+    )
 }
 
 pub fn integer_field(
@@ -374,103 +381,112 @@ pub fn integer_field(
     speed: f64,
     suffix: &str,
 ) -> bool {
-    ui.spacing_mut().item_spacing.x = 5.0;
-    ui.label(
-        RichText::new(suffix)
-            .font(theme::mono_medium(8.0))
-            .color(theme::dim()),
-    );
-
-    let width = field_text_width(ui, range.end().to_string());
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
-    let hovered = ui.rect_contains_pointer(rect);
-    paint_field_background(ui, rect, hovered);
-
-    let mut child = configure_field_child(ui, rect, width - 4.0);
-    child
-        .add_sized(
-            Vec2::new(width - 4.0, 18.0),
-            egui::DragValue::new(value)
-                .range(range)
-                .speed(speed)
-                .max_decimals(0),
-        )
-        .changed()
+    add_field(
+        ui,
+        suffix,
+        egui::DragValue::new(value)
+            .range(range)
+            .speed(speed)
+            .max_decimals(0),
+        5.0,
+    )
 }
 
 /// Signed whole-number field used by the fixed-point coordinates.
 pub fn coordinate_field(ui: &mut Ui, value: &mut i32, suffix: &str) -> bool {
-    ui.spacing_mut().item_spacing.x = 4.0;
-    ui.label(
-        RichText::new(suffix)
-            .font(theme::mono_medium(8.0))
-            .color(theme::dim()),
-    );
-
-    let sample =
-        ui.painter()
-            .layout_no_wrap("-99999".to_owned(), theme::mono_medium(12.0), theme::text());
-    let width = (sample.size().x + 16.0).max(54.0);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
-    let hovered = ui.rect_contains_pointer(rect);
-    paint_field_background(ui, rect, hovered);
-
-    let mut child = configure_field_child(ui, rect, width - 4.0);
-    child
-        .add_sized(
-            Vec2::new(width - 4.0, 18.0),
-            egui::DragValue::new(value).speed(1.0).max_decimals(0),
-        )
-        .changed()
+    add_field(
+        ui,
+        suffix,
+        egui::DragValue::new(value).speed(1.0).max_decimals(0),
+        4.0,
+    )
 }
 
-pub fn theme_toggle(ui: &mut Ui, dark: bool, label: &str) -> Response {
-    let galley =
-        ui.painter()
-            .layout_no_wrap(label.to_owned(), theme::mono_medium(8.5), theme::text());
-    let size = Vec2::new(galley.size().x + 34.0, 24.0);
+pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
+    let box_size = 16.0;
+    let gap = 7.0;
+    let font = theme::sans(12.5);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font.clone(), theme::text());
+    let height = FIELD_HEIGHT.max(galley.size().y + 4.0);
+    let size = Vec2::new(box_size + gap + galley.size().x, height);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let response = response.on_hover_cursor(CursorIcon::PointingHand);
-    let hovered = response.hovered();
+    let enabled = ui.is_enabled();
+    let mut response = if enabled {
+        response.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        response
+    };
 
-    let radius = CornerRadius::same(7);
-    let painter = ui.painter();
-    painter.rect_filled(
-        rect,
-        radius,
-        if hovered {
-            theme::alpha(theme::accent(), 16)
-        } else {
-            theme::panel()
-        },
+    let mut changed = enabled && response.clicked();
+    if enabled && response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Space)) {
+        changed = true;
+    }
+    if changed {
+        *checked = !*checked;
+    }
+
+    let hovered = enabled && response.hovered();
+    let box_rect = Rect::from_min_size(
+        pos2(rect.left(), rect.center().y - box_size * 0.5),
+        Vec2::splat(box_size),
     );
+    let painter = ui.painter();
+    let fill = if *checked {
+        theme::accent()
+    } else if hovered {
+        theme::alpha(theme::accent(), 18)
+    } else {
+        theme::input()
+    };
+    let stroke = if *checked || hovered {
+        theme::accent()
+    } else {
+        theme::muted()
+    };
+    painter.rect_filled(box_rect, CornerRadius::same(4), fill);
     painter.rect_stroke(
-        rect,
-        radius,
-        Stroke::new(
-            1.0_f32,
-            if hovered {
-                theme::accent()
-            } else {
-                theme::line()
-            },
-        ),
+        box_rect,
+        CornerRadius::same(4),
+        Stroke::new(1.5_f32, stroke),
         egui::StrokeKind::Inside,
     );
 
-    let icon = pos2(rect.left() + 13.0, rect.center().y);
-    painter.circle_stroke(icon, 4.5, Stroke::new(1.2_f32, theme::accent()));
-    painter.circle_filled(icon, 2.0, theme::accent());
-    if dark {
-        painter.circle_filled(pos2(icon.x + 2.0, icon.y - 2.0), 4.0, theme::panel());
+    if *checked {
+        let check = Stroke::new(2.0_f32, theme::on_accent());
+        painter.line_segment(
+            [
+                pos2(box_rect.left() + 3.8, box_rect.center().y),
+                pos2(box_rect.left() + 6.8, box_rect.bottom() - 4.3),
+            ],
+            check,
+        );
+        painter.line_segment(
+            [
+                pos2(box_rect.left() + 6.8, box_rect.bottom() - 4.3),
+                pos2(box_rect.right() - 3.5, box_rect.top() + 4.5),
+            ],
+            check,
+        );
     }
 
+    let color = if enabled { theme::text() } else { theme::dim() };
+    let galley = painter.layout_no_wrap(label.to_owned(), font, color);
     painter.galley(
-        pos2(rect.left() + 22.0, rect.center().y - galley.size().y * 0.5),
+        pos2(
+            box_rect.right() + gap,
+            rect.center().y - galley.size().y * 0.5,
+        ),
         galley,
-        theme::text(),
+        color,
     );
 
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, *checked, label));
+
+    if changed {
+        response.mark_changed();
+    }
     response
 }
 
@@ -481,7 +497,7 @@ pub fn notice_line(ui: &mut Ui, tone: Color32, title: &str, text: &str) -> Respo
         ui.painter().circle_filled(dot.center(), 3.0, tone);
         ui.label(
             RichText::new(title)
-                .font(theme::mono_medium(8.0))
+                .font(theme::mono_medium(8.5))
                 .color(tone),
         );
 
@@ -587,7 +603,6 @@ pub fn text_button(ui: &mut Ui, label: &str, idle: Color32, hover: Color32) -> R
     response
 }
 
-#[cfg(not(windows))]
 pub fn solid_button(ui: &mut Ui, label: &str, fill: Color32, text: Color32) -> Response {
     let button = egui::Button::new(
         RichText::new(label)

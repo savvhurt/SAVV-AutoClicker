@@ -52,8 +52,25 @@ impl Hotkey {
             }
         }
 
-        (hotkey.vk, hotkey.key) = parse_key(key)?;
+        let (vk, canonical, needs_shift) = parse_key(key)?;
+        hotkey.vk = vk;
+        hotkey.key = canonical;
+        // Symbols such as `!` or `{` live on a shifted key. Registering them
+        // without MOD_SHIFT would never match (and `!` would collide with `1`).
+        hotkey.shift |= needs_shift;
         Ok(hotkey)
+    }
+
+    /// Modifier order shared by the label, the config format and the release
+    /// watcher. Each entry carries both physical virtual-key codes: `RegisterHotKey`
+    /// accepts either side, so the watcher must too.
+    fn parts(&self) -> [(bool, &'static str, [u32; 2]); 4] {
+        [
+            (self.ctrl, "ctrl", [0xA2, 0xA3]),
+            (self.alt, "alt", [0xA4, 0xA5]),
+            (self.shift, "shift", [0xA0, 0xA1]),
+            (self.win, "win", [0x5B, 0x5C]),
+        ]
     }
 
     #[cfg(windows)]
@@ -88,37 +105,20 @@ impl Hotkey {
             (unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000) != 0
         }
 
-        let mut keys = vec![self.vk];
-        if self.ctrl {
-            keys.push(0x11);
-        }
-        if self.alt {
-            keys.push(0x12);
-        }
-        if self.shift {
-            keys.push(0x10);
-        }
-        if self.win {
-            keys.push(0x5B);
-        }
-
-        keys.into_iter().all(down)
+        down(self.vk)
+            && self
+                .parts()
+                .into_iter()
+                .all(|(enabled, _, vks)| !enabled || vks.into_iter().any(down))
     }
 
     /// Human-readable form used by the GUI, e.g. `CTRL + ALT + C`.
     pub(crate) fn label(&self) -> String {
         let mut parts = Vec::with_capacity(5);
-        if self.ctrl {
-            parts.push("CTRL".to_string());
-        }
-        if self.alt {
-            parts.push("ALT".to_string());
-        }
-        if self.shift {
-            parts.push("SHIFT".to_string());
-        }
-        if self.win {
-            parts.push("WIN".to_string());
+        for (enabled, name, _) in self.parts() {
+            if enabled {
+                parts.push(name.to_ascii_uppercase());
+            }
         }
         parts.push(key_label(&self.key).to_ascii_uppercase());
         parts.join(" + ")
@@ -128,12 +128,7 @@ impl Hotkey {
 impl fmt::Display for Hotkey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
-        for (enabled, name) in [
-            (self.ctrl, "ctrl"),
-            (self.alt, "alt"),
-            (self.shift, "shift"),
-            (self.win, "win"),
-        ] {
+        for (enabled, name, _) in self.parts() {
             if enabled {
                 if !first {
                     f.write_str("+")?;
@@ -169,7 +164,7 @@ fn key_label(key: &str) -> &str {
     }
 }
 
-fn parse_key(key: &str) -> Result<(u32, String)> {
+fn parse_key(key: &str) -> Result<(u32, String, bool)> {
     let upper = key.trim().to_ascii_uppercase();
 
     if upper.is_empty() {
@@ -179,54 +174,56 @@ fn parse_key(key: &str) -> Result<(u32, String)> {
     if upper.len() == 1 {
         let byte = upper.as_bytes()[0];
         if byte.is_ascii_alphanumeric() {
-            return Ok((byte as u32, upper));
+            return Ok((byte as u32, upper, false));
         }
     }
 
     if let Some(number) = upper.strip_prefix('F') {
         if let Ok(number) = number.parse::<u32>() {
             if (1..=24).contains(&number) {
-                return Ok((0x70 + number - 1, upper));
+                return Ok((0x70 + number - 1, upper, false));
             }
         }
     }
 
-    let (vk, canonical) = match upper.as_str() {
-        "SPACE" => (0x20, "Space"),
-        "TAB" => (0x09, "Tab"),
-        "ENTER" | "RETURN" => (0x0D, "Enter"),
-        "ESC" | "ESCAPE" => (0x1B, "Escape"),
-        "BACKSPACE" | "BKSP" => (0x08, "Backspace"),
-        "DELETE" | "DEL" => (0x2E, "Delete"),
-        "INSERT" | "INS" => (0x2D, "Insert"),
-        "HOME" => (0x24, "Home"),
-        "END" => (0x23, "End"),
-        "PAGEUP" | "PGUP" | "PRIOR" => (0x21, "PageUp"),
-        "PAGEDOWN" | "PGDN" | "NEXT" => (0x22, "PageDown"),
-        "LEFT" | "ARROWLEFT" => (0x25, "Left"),
-        "UP" | "ARROWUP" => (0x26, "Up"),
-        "RIGHT" | "ARROWRIGHT" => (0x27, "Right"),
-        "DOWN" | "ARROWDOWN" => (0x28, "Down"),
-        "MINUS" | "-" => (0xBD, "Minus"),
-        "EQUALS" | "EQUAL" | "=" | "PLUS" | "+" => (0xBB, "Equals"),
-        "OPENBRACKET" | "LBRACKET" | "LEFTBRACKET" | "OPENCURLYBRACKET" | "[" | "{" => {
-            (0xDB, "OpenBracket")
-        }
-        "CLOSEBRACKET" | "RBRACKET" | "RIGHTBRACKET" | "CLOSECURLYBRACKET" | "]" | "}" => {
-            (0xDD, "CloseBracket")
-        }
-        "BACKSLASH" | "PIPE" | "\\" | "|" => (0xDC, "Backslash"),
-        "SEMICOLON" | "COLON" | ";" | ":" => (0xBA, "Semicolon"),
-        "QUOTE" | "APOSTROPHE" | "'" => (0xDE, "Quote"),
-        "COMMA" | "," => (0xBC, "Comma"),
-        "PERIOD" | "DOT" | "." => (0xBE, "Period"),
-        "SLASH" | "QUESTIONMARK" | "/" | "?" => (0xBF, "Slash"),
-        "BACKTICK" | "BACKQUOTE" | "GRAVE" | "`" => (0xC0, "Backtick"),
-        "EXCLAMATIONMARK" | "!" => (0x31, "1"),
+    let (vk, canonical, needs_shift) = match upper.as_str() {
+        "SPACE" => (0x20, "Space", false),
+        "TAB" => (0x09, "Tab", false),
+        "ENTER" | "RETURN" => (0x0D, "Enter", false),
+        "ESC" | "ESCAPE" => (0x1B, "Escape", false),
+        "BACKSPACE" | "BKSP" => (0x08, "Backspace", false),
+        "DELETE" | "DEL" => (0x2E, "Delete", false),
+        "INSERT" | "INS" => (0x2D, "Insert", false),
+        "HOME" => (0x24, "Home", false),
+        "END" => (0x23, "End", false),
+        "PAGEUP" | "PGUP" | "PRIOR" => (0x21, "PageUp", false),
+        "PAGEDOWN" | "PGDN" | "NEXT" => (0x22, "PageDown", false),
+        "LEFT" | "ARROWLEFT" => (0x25, "Left", false),
+        "UP" | "ARROWUP" => (0x26, "Up", false),
+        "RIGHT" | "ARROWRIGHT" => (0x27, "Right", false),
+        "DOWN" | "ARROWDOWN" => (0x28, "Down", false),
+        "MINUS" | "-" => (0xBD, "Minus", false),
+        "EQUALS" | "EQUAL" | "=" => (0xBB, "Equals", false),
+        "PLUS" => (0xBB, "Equals", true),
+        "OPENBRACKET" | "LBRACKET" | "LEFTBRACKET" | "[" => (0xDB, "OpenBracket", false),
+        "OPENCURLYBRACKET" | "{" => (0xDB, "OpenBracket", true),
+        "CLOSEBRACKET" | "RBRACKET" | "RIGHTBRACKET" | "]" => (0xDD, "CloseBracket", false),
+        "CLOSECURLYBRACKET" | "}" => (0xDD, "CloseBracket", true),
+        "BACKSLASH" | "\\" => (0xDC, "Backslash", false),
+        "PIPE" | "|" => (0xDC, "Backslash", true),
+        "SEMICOLON" | ";" => (0xBA, "Semicolon", false),
+        "COLON" | ":" => (0xBA, "Semicolon", true),
+        "QUOTE" | "APOSTROPHE" | "'" => (0xDE, "Quote", false),
+        "COMMA" | "," => (0xBC, "Comma", false),
+        "PERIOD" | "DOT" | "." => (0xBE, "Period", false),
+        "SLASH" | "/" => (0xBF, "Slash", false),
+        "QUESTIONMARK" | "?" => (0xBF, "Slash", true),
+        "BACKTICK" | "BACKQUOTE" | "GRAVE" | "`" => (0xC0, "Backtick", false),
+        "EXCLAMATIONMARK" | "!" => (0x31, "1", true),
         other => bail!("unsupported hotkey key `{other}`"),
     };
 
-    Ok((vk, canonical.to_string()))
+    Ok((vk, canonical.to_string(), needs_shift))
 }
 
 #[cfg(test)]
@@ -284,6 +281,44 @@ mod tests {
         let hotkey = Hotkey::parse("alt+control+space").unwrap();
         assert_eq!(hotkey.to_string(), "ctrl+alt+space");
         assert_eq!(hotkey.label(), "CTRL + ALT + SPACE");
+    }
+
+    #[test]
+    fn shifted_symbols_set_the_shift_modifier() {
+        for (combo, canonical) in [
+            ("!", "shift+1"),
+            ("{", "shift+openbracket"),
+            ("}", "shift+closebracket"),
+            (":", "shift+semicolon"),
+            ("?", "shift+slash"),
+            ("plus", "shift+equals"),
+            ("|", "shift+backslash"),
+        ] {
+            let hotkey = Hotkey::parse(combo).unwrap();
+            assert!(hotkey.shift, "`{combo}` must require Shift");
+            assert_eq!(hotkey.to_string(), canonical, "wrong form for `{combo}`");
+        }
+
+        assert_eq!(Hotkey::parse("shift+!").unwrap().to_string(), "shift+1");
+        assert_eq!(Hotkey::parse("!").unwrap().label(), "SHIFT + 1");
+
+        let minus = Hotkey::parse("-").unwrap();
+        assert!(!minus.shift);
+        assert_eq!(minus.to_string(), "minus");
+    }
+
+    #[test]
+    fn modifiers_cover_both_physical_keys() {
+        let hotkey = Hotkey::parse("ctrl+alt+shift+win+f8").unwrap();
+        assert_eq!(
+            hotkey.parts(),
+            [
+                (true, "ctrl", [0xA2, 0xA3]),
+                (true, "alt", [0xA4, 0xA5]),
+                (true, "shift", [0xA0, 0xA1]),
+                (true, "win", [0x5B, 0x5C]),
+            ]
+        );
     }
 
     #[test]

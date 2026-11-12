@@ -1,6 +1,5 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/icon/savv-autoclicker.ico");
-    println!("cargo:rerun-if-changed=assets/icon/savv-autoclicker.svg");
 
     // `cfg(windows)` in a build script describes the host that runs the
     // script, so inspect the actual compilation target instead. This keeps

@@ -35,20 +35,22 @@ A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
 - Hold-to-click on Windows: a separate key starts clicking while it is held and
   stops on release. It does not interfere when clicking was already enabled by
   the toggle hotkey.
-- **UI scale**: 80–150% with presets, saved in `gui.toml`.
-- Light and dark themes. Theme, language, hotkeys, UI scale and all click
-  settings are saved automatically in `gui.toml`, including when the window is
-  closed accidentally.
+- **Automatic UI scaling**: the window fits the monitor and the system DPI
+  without a manual scale setting. It never grows above 100% and stops shrinking
+  at 75%, so it stays usable on small or high-DPI screens.
+- Six themes: Paper, Graphite, Sand, Ocean, Forest and Contrast. Theme,
+  language, hotkeys and all click settings are
+  saved automatically in `gui.toml`, including when the window is closed
+  accidentally.
 - **Restore defaults**: the System tab can reset click settings, mode, points,
-  hotkeys, theme, language and UI scale. OS autostart and the tray preference
-  are kept.
+  hotkeys, theme and language. OS autostart and the tray preference are kept.
 - **Interface languages**: Auto, English, Русский, Deutsch, Français, Español
   and Português. Auto follows the system locale; an unknown locale falls back to
   English.
 - **Autostart on Linux and Windows**: the System tab installs a freedesktop
   entry or a per-user registry value that launches the GUI with the session.
-- **Windows tray**: optionally minimize to the notification area; the tray menu
-  restores the window or exits the app.
+- **Windows tray**: optionally minimize to the notification area; a left click
+  or the tray menu restores the window, and the menu can exit the app.
 - **Windows elevation check**: on startup the app detects whether it runs as
   administrator and warns that elevated applications and games ignore clicks
   from a non-elevated process.
@@ -56,10 +58,10 @@ A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
 - GUI in the same binary: running without arguments opens the window, while
   subcommands stay on the CLI. Four tabs — **Clicks**, **Mode**, **Hotkeys**,
   **System** — with live settings, statistics and hotkey recording. The window
-  is 460×560 (minimum 420×520) at 100% scale and scrolls when the content does
-  not fit.
-- Numeric fields widen to fit the maximum value, so large values such as
-  `1000.0`, `5000.0` or `1000000000` are never cut off.
+  is 460×560 (minimum 420×520) at 100% scale, scales automatically to fit the
+  monitor and scrolls when the content does not fit.
+- Numeric fields use one uniform size that fits the largest values, so values
+  such as `1000.0`, `5000.0` or `1000000000` are never cut off.
 - The mouse button is always released on stop, Ctrl+C and daemon shutdown.
 - A single daemon instance, controlled through a local socket
   (Unix socket / Windows named pipe).
@@ -181,12 +183,12 @@ Without arguments the GUI starts. With arguments the same file works as a CLI:
 `savv-autoclicker.exe status`, `savv-autoclicker.exe toggle`,
 `savv-autoclicker.exe daemon --detach`.
 
-The interface is deliberately minimal: a warm paper background or a dark
-palette, ink-like typography, a single signal-orange accent, a large power
-button and flat parameter rows without cards or a decorative grid. IBM Plex
-Sans / IBM Plex Mono are embedded in the binary; the license is in
-`assets/fonts/LICENSE.txt`. The theme switch in the top-right corner changes
-the palette on the fly and is saved to `gui.toml`.
+The interface is deliberately minimal: warm paper, graphite, sand, ocean,
+forest or high-contrast surfaces with ink-like typography, a single signal
+accent, a large power button and flat parameter rows without cards or a
+decorative grid. IBM Plex Sans / IBM Plex Mono are embedded in the binary; the
+license is in `assets/fonts/LICENSE.txt`. The theme dropdown in the System tab
+changes the palette on the fly and is saved to `gui.toml`.
 
 Tabs:
 
@@ -202,13 +204,13 @@ Tabs:
   hold-to-click key. On Linux, the recommended `MOD+ALT+C → TOGGLE` bind is
   shown with a clickable label that copies a ready-to-use line containing the
   full path to the current binary (see “Hotkey” below).
-- **System** — interface language (Auto or one of six languages), light/dark
-  theme, UI scale, autostart, Windows tray and elevation options, and the
+- **System** — interface language (Auto or one of six languages), theme
+  dropdown, autostart, Windows tray and elevation options, and the
   **Restore defaults** button.
 
 The window is designed for 460×560 px at 100% scale; the minimum size is
-420×520. With UI scaling the window grows or shrinks together with the content,
-and the tab body scrolls when needed.
+420×520. The scale is chosen automatically from the monitor size and DPI: it is
+capped at 100% and never goes below 75%. The tab body scrolls when needed.
 
 ### Point and sequence modes
 
@@ -226,8 +228,8 @@ does not lose either.
 ### Restore defaults
 
 **System → Restore defaults** asks for confirmation and resets click settings,
-mode, points and interval, hotkeys, theme, language and UI scale. OS autostart
-and the Windows tray preference are left unchanged.
+mode, points and interval, hotkeys, theme and language. OS autostart and the
+Windows tray preference are left unchanged.
 
 ### Windows elevation
 
@@ -262,12 +264,18 @@ opens. Closing the window disables clicking; the daemon keeps running in the
 background. Use `savv-autoclicker quit` to stop it.
 
 On Windows, enabling **Minimize to tray** hides the window instead of keeping a
-taskbar button. Double-click the tray icon or use **Show** in its menu to
-restore it; **Exit** closes the app. With tray enabled, autostart launches the
-GUI hidden (`--hidden`), so login does not open a window.
+taskbar button. Left-click the tray icon — or use **Show** in its menu — to
+restore the window; **Exit** closes the app. With tray enabled, autostart
+launches the GUI hidden (`--hidden`), so login does not open a window.
 
-GUI settings (click parameters, theme, language, UI scale, tray preference and
-hotkeys) are saved automatically:
+Windows 11 hides new notification-area icons behind the overflow chevron by
+default. If the icon is not visible next to the clock, open the chevron and drag
+it onto the taskbar, or enable it in **Settings → Personalisation → Taskbar →
+Other system tray icons**. If the tray icon still does not appear, the app writes
+diagnostics to `%APPDATA%\SAVV-AutoClicker\tray.log`.
+
+GUI settings (click parameters, theme, language, tray preference and hotkeys)
+are saved automatically:
 
 - Linux: `$XDG_CONFIG_HOME/savv-autoclicker/gui.toml` or
   `~/.config/savv-autoclicker/gui.toml`
@@ -437,8 +445,10 @@ current executable. If **Minimize to tray** is also enabled, autostart adds
 Disable the checkbox to remove the value.
 
 With **Minimize to tray** enabled, minimizing the window hides it and keeps the
-app in the notification area. The tray menu offers **Show** (restore the window)
-and **Exit** (close the app and stop the daemon).
+app in the notification area. Left-click the tray icon or choose **Show** to
+restore the window; **Exit** closes the app and stops the daemon. On Windows 11
+the icon may first appear in the overflow menu — see the note in the GUI section
+above.
 
 ### Windows limitations
 
