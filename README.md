@@ -1,7 +1,15 @@
 <p align="center">
   <a href="https://github.com/savvhurt/SAVV-AutoClicker/releases">
-    <img src="https://img.shields.io/badge/DOWNLOADS-854K-brightgreen?style=for-the-badge" alt="Downloads">
+    <img src="https://img.shields.io/badge/DOWNLOADS-0-brightgreen?style=for-the-badge" alt="Downloads">
   </a>
+  <a href="https://github.com/savvhurt/SAVV-AutoClicker/releases">
+    <img src="https://img.shields.io/badge/VERSION-V0.4.1-blue?style=for-the-badge" alt="Version">
+  </a>
+  <a href="https://github.com/savvhurt/SAVV-AutoClicker/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/LICENSE-GPL--3.0-orange?style=for-the-badge" alt="License">
+  </a>
+  <a href="https://github.com/savvhurt/SAVV-AutoClicker/stargazers">
+    <img src="https://img.shields.io/github/stars/savvhurt/SAVV-AutoClicker?style=for-the-badge&color=blue" alt="Stars">
 </p>
 
 # V-AutoClicker
