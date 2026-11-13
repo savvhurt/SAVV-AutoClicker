@@ -17,9 +17,9 @@
 A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
 **Windows**. Clicks are injected at the operating-system level:
 
-- **Linux** — a virtual mouse through `/dev/uinput` (works on Wayland and X11,
+- **Linux** - a virtual mouse through `/dev/uinput` (works on Wayland and X11,
   no root required when the device is accessible to your user).
-- **Windows** — `SendInput`, with no drivers and no administrator rights.
+- **Windows** - `SendInput`, with no drivers and no administrator rights.
 
 ## Features
 
@@ -34,10 +34,10 @@ A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
   stopping during the delay cancels the start.
 - Left, right and middle mouse button.
 - **Three click modes**:
-  - **Cursor** — clicks go to the current cursor position.
-  - **Point** — a single fixed X/Y point; every pulse moves the cursor there
+  - **Cursor** - clicks go to the current cursor position.
+  - **Point** - a single fixed X/Y point; every pulse moves the cursor there
     before clicking.
-  - **Sequence** — up to 16 points are clicked in order with a configurable
+  - **Sequence** - up to 16 points are clicked in order with a configurable
     interval. The cycle repeats until clicking is stopped.
 - **Eyedropper**: the point and sequence editors have a picker button. Click it,
   then click anywhere on screen to capture the coordinates into X/Y. Escape
@@ -76,8 +76,8 @@ A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
   from a non-elevated process.
 - CLI: `toggle`, `on`, `off`, `status`, `quit`.
 - GUI in the same binary: running without arguments opens the window, while
-  subcommands stay on the CLI. Four tabs — **Clicks**, **Mode**, **Hotkeys**,
-  **System** — with live settings, statistics and hotkey recording. The window
+  subcommands stay on the CLI. Four tabs - **Clicks**, **Mode**, **Hotkeys**,
+  **System** - with live settings, statistics and hotkey recording. The window
   is 460×560 (minimum 420×520) at 100% scale, scales automatically to fit the
   monitor and scrolls when the content does not fit.
 - Numeric fields use one uniform size that fits the largest values, so values
@@ -216,19 +216,19 @@ changes the palette on the fly and is saved to `gui.toml`.
 
 Tabs:
 
-- **Clicks** — speed (hidden in sequence mode), mouse button, hold duration,
+- **Clicks** - speed (hidden in sequence mode), mouse button, hold duration,
   jitter, limit and delay. A limit of `0` disables the restriction; after N
   clicks the session stops by itself. The delay of 0–10 000 ms applies only to
   the start of a new session: stopping while waiting cancels the start. All
   values are applied live, including during clicking.
-- **Mode** — choose Cursor, Point or Sequence mode, edit X/Y coordinates,
+- **Mode** - choose Cursor, Point or Sequence mode, edit X/Y coordinates,
   capture a point with the eyedropper, manage up to 16 sequence points and their
   interval, and select single, double or triple clicks per pulse.
-- **Hotkeys** — on Windows, record the global toggle hotkey and the separate
+- **Hotkeys** - on Windows, record the global toggle hotkey and the separate
   hold-to-click key. On Linux, the recommended `MOD+ALT+C → TOGGLE` bind is
   shown with a clickable label that copies a ready-to-use line containing the
   full path to the current binary (see “Hotkey” below).
-- **System** — interface language (Auto or one of six languages), theme
+- **System** - interface language (Auto or one of six languages), theme
   dropdown, autostart, Windows close-to-tray and elevation options, and the
   **Restore defaults** button.
 
@@ -263,7 +263,7 @@ not, the System tab shows a warning and a **Restart as administrator** button
 that relaunches the app through the UAC prompt.
 
 On Windows, a hotkey is recorded directly in the interface: click the field,
-then press the key — either without modifiers (`f8`, `space`, `esc`) or combined
+then press the key - either without modifiers (`f8`, `space`, `esc`) or combined
 with Ctrl/Alt/Shift. Esc does not cancel recording; it is assigned as a normal
 key. To cancel recording, click the field again. While recording, the daemon
 unregisters the hotkeys, so an already active combination can be re-recorded. A
@@ -276,8 +276,8 @@ combination. As a fallback,
 a running daemon without a restart. The second hotkey, hold-to-click, has its
 own field; identical keys for toggle and hold are rejected.
 
-Hold-to-click works only on Windows: press and hold the key — clicks run;
-release — they stop. If clicking is already enabled by the toggle, the hold key
+Hold-to-click works only on Windows: press and hold the key - clicks run;
+release - they stop. If clicking is already enabled by the toggle, the hold key
 does nothing. On Linux the field is hidden: the compositor owns the global key
 and hold-to-click is not supported there.
 
@@ -290,7 +290,7 @@ background. Use `savv-autoclicker quit` to stop it.
 
 On Windows, enabling **Close to tray** hides the window when it is closed
 (the title-bar X or Alt+F4) instead of quitting; minimizing still uses the
-taskbar. Left-click the tray icon — or use **Show** in its menu — to restore the
+taskbar. Left-click the tray icon - or use **Show** in its menu - to restore the
 window; **Exit** always quits and stops the daemon. With close-to-tray enabled,
 autostart launches the GUI hidden (`--hidden`), so login does not open a window.
 
@@ -367,7 +367,7 @@ recording in the GUI do not register on Linux. Configure the key with the
 compositor; the GUI shows the recommended `MOD+ALT+C` combination and copies a
 ready-to-use bind containing the full path.
 
-**niri** — in `~/.config/niri/config.kdl` or an included binds file:
+**niri** - in `~/.config/niri/config.kdl` or an included binds file:
 
 ```kdl
 binds {
@@ -385,7 +385,7 @@ Do not use `Mod+Shift+C`: it is already bound in many niri configurations
 (`center-column`). After changing the config, run
 `niri msg action load-config-file` or restart niri.
 
-**GNOME / KDE** — Settings → Keyboard → Custom Shortcut, command:
+**GNOME / KDE** - Settings → Keyboard → Custom Shortcut, command:
 
 ```bash
 savv-autoclicker toggle
@@ -440,7 +440,7 @@ restart. The requested and actually active combinations are available in:
 
 The output includes `hotkey`, `hotkey_active`, `hold_hotkey`,
 `hold_hotkey_active` and `hotkey_error`. If the active combination is `none` or
-differs from the requested one, check `hotkey_error` — usually it is a conflict
+differs from the requested one, check `hotkey_error` - usually it is a conflict
 with another program.
 
 Supported modifiers are `ctrl`, `alt`, `shift` and `win`; supported keys are
@@ -449,17 +449,17 @@ Supported modifiers are `ctrl`, `alt`, `shift` and `win`; supported keys are
 `-`, `=`, `[`, `]`, `\`, `;`, `'`, `,`, `.`, `/`, `` ` ``. A combination made
 only of modifiers is rejected. The GUI records only Ctrl/Alt/Shift: egui does
 not forward the Win key, but it can still be specified through `--hotkey`. F12
-may be reserved by Windows — a normal error is shown and the previous key stays
+may be reserved by Windows - a normal error is shown and the previous key stays
 active.
 
-Hold-to-click uses a separate key — in the GUI on the **Hotkeys** tab or through
+Hold-to-click uses a separate key - in the GUI on the **Hotkeys** tab or through
 the CLI:
 
 ```powershell
 .\savv-autoclicker.exe daemon --hold-hotkey f9
 ```
 
-Press and hold the key — clicks run; release — they stop. Hold works only while
+Press and hold the key - clicks run; release - they stop. Hold works only while
 clicking is disabled by the toggle. On Linux hold-to-click is unavailable; the
 compositor owns the global key.
 
@@ -476,7 +476,7 @@ With **Close to tray** enabled, closing the window hides it and keeps the app in
 the notification area. Minimizing still shows a normal taskbar button.
 Left-click the tray icon or choose **Show** to restore the window; **Exit**
 always quits and stops the daemon. On Windows 11 the icon may first appear in
-the overflow menu — see the note in the GUI section above.
+the overflow menu - see the note in the GUI section above.
 
 ### Windows limitations
 
@@ -516,12 +516,12 @@ The CLI works the same as on Linux:
 | `--limit N` | `0` | Clicks per session; `0` means unlimited; clicking stops after N clicks |
 | `--delay-ms MS` | `0` | Pause before the first click of a new session, `0–10000`; not restarted by settings changes |
 | `--multi-click N` | `1` | Clicks per pulse: `1` single, `2` double, `3` triple |
-| `--x X` | — | Fixed-point X coordinate; requires `--y` |
-| `--y Y` | — | Fixed-point Y coordinate; requires `--x` |
-| `--duration-secs SECS` | — | `run` only: stop after N seconds |
+| `--x X` | - | Fixed-point X coordinate; requires `--y` |
+| `--y Y` | - | Fixed-point Y coordinate; requires `--x` |
+| `--duration-secs SECS` | - | `run` only: stop after N seconds |
 | `--hotkey COMBO` | `ctrl+alt+c` | Windows only; any key or combination, applied live to a running daemon |
-| `--hold-hotkey COMBO` | — | Windows and `daemon` only: hold-to-click key |
-| `--detach` | — | `daemon` only: continue in the background |
+| `--hold-hotkey COMBO` | - | Windows and `daemon` only: hold-to-click key |
+| `--detach` | - | `daemon` only: continue in the background |
 
 Sequence mode and the point interval are configured in the GUI.
 
@@ -593,5 +593,5 @@ Manual check on Linux:
 savv-autoclicker run --cps 5 --duration-secs 2
 ```
 
-Point the cursor at a text editor — clicks should appear, and the button must
+Point the cursor at a text editor - clicks should appear, and the button must
 not stay pressed after the run finishes.
