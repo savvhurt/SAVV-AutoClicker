@@ -1,4 +1,10 @@
-# SAVV-AutoClicker
+<p align="center">
+  <a href="https://github.com/savvhurt/SAVV-AutoClicker/releases">
+    <img src="https://img.shields.io/badge/DOWNLOADS-854K-brightgreen?style=for-the-badge" alt="Downloads">
+  </a>
+</p>
+
+# V-AutoClicker
 
 A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
 **Windows**. Clicks are injected at the operating-system level:
