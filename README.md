@@ -6,7 +6,7 @@
     <img src="https://img.shields.io/github/v/release/savvhurt/SAVV-AutoClicker?style=for-the-badge&color=blue&label=VERSION&sort=semver" alt="Version">
   </a>
   <a href="https://github.com/savvhurt/SAVV-AutoClicker/stargazers">
-    <img src="https://img.shields.io/github/stars/savvhurt/SAVV-AutoClicker?style=for-the-badge&color=blue" alt="Stars">
+    <img src="https://img.shields.io/github/stars/savvhurt/SAVV-AutoClicker?style=for-the-badge&color=yellow" alt="Stars">
 </p>
 
 # V-AutoClicker
