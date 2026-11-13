@@ -14,15 +14,29 @@ on:
 permissions:
   contents: write
 
-env:
-  TAG: ${{ inputs.tag || github.ref_name }}
-
 jobs:
   windows:
     name: Windows x86_64
     runs-on: windows-latest
 
     steps:
+      # Tokens without Actions write cannot dispatch this workflow from the CLI.
+      # A temporary tag such as v0.4.0-backfill can rebuild and republish an
+      # older tag; the suffix is stripped before checkout and publishing.
+      - name: Resolve target tag
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${REQUESTED_TAG}"
+          if [ -z "$tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            if [[ "$tag" == *-backfill ]]; then
+              tag="${tag%-backfill}"
+            fi
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
@@ -55,6 +69,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Resolve target tag
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${REQUESTED_TAG}"
+          if [ -z "$tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            if [[ "$tag" == *-backfill ]]; then
+              tag="${tag%-backfill}"
+            fi
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
@@ -88,6 +116,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Resolve target tag
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${REQUESTED_TAG}"
+          if [ -z "$tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            if [[ "$tag" == *-backfill ]]; then
+              tag="${tag%-backfill}"
+            fi
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
       # The notes live on the default branch so an older tag can be backfilled
       # without moving that tag.
       - uses: actions/checkout@v4
