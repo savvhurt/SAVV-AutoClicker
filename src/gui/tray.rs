@@ -1,17 +1,19 @@
-//! Native Windows tray icon. The GUI cannot intercept close requests with the
-//! software backend, so "minimize to tray" hides the window when Windows
-//! reports it as minimized and restores it from this icon.
+//! Native Windows tray icon.
 //!
-//! The tray thread also polls the GUI window with a Win32 timer. This does not
-//! depend on egui receiving another repaint after the window has been
-//! minimized, which is not guaranteed by the software backend.
+//! Closing the window is intercepted with a window subclass on the GUI thread,
+//! because the software backend gives the application no way to see a close
+//! request. When "close to tray" is enabled, `WM_CLOSE` hides the window and
+//! keeps the process running; the tray icon restores it. The tray menu's Exit
+//! command bypasses the guard so it always ends the process.
+//!
+//! Minimizing is intentionally left alone: it keeps the normal taskbar button.
 
 use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::mem::size_of;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -23,16 +25,17 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+    DefSubclassProc, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    SetWindowSubclass, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, HICON, HWND_MESSAGE, IDI_APPLICATION,
-    IsIconic, IsWindow, KillTimer, LoadIconW, MF_SEPARATOR, MF_STRING, MSG, PostMessageW,
-    PostQuitMessage, RegisterClassW, SW_HIDE, SW_RESTORE, SetForegroundWindow, SetTimer,
-    ShowWindow, TPM_LEFTALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TrackPopupMenu, TranslateMessage,
-    WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK,
-    WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER, WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPED,
+    IsWindow, LoadIconW, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, PostQuitMessage,
+    RegisterClassW, SW_HIDE, SW_RESTORE, SetForegroundWindow, ShowWindow, TPM_LEFTALIGN,
+    TPM_NONOTIFY, TPM_RETURNCMD, TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP,
+    WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
+    WNDCLASS_STYLES, WNDCLASSW, WS_OVERLAPPED,
 };
 use windows::core::PCWSTR;
 
@@ -42,8 +45,7 @@ const WINDOW_TITLE: &str = "SAVV-AutoClicker";
 const TRAY_CLASS: &str = "SAVV-AutoClickerTray";
 const TRAY_ID: u32 = 1;
 const TRAY_CALLBACK: u32 = WM_APP + 1;
-const TRAY_TIMER: usize = 1;
-const TRAY_POLL_MS: u32 = 200;
+const CLOSE_SUBCLASS_ID: usize = 1;
 const MENU_SHOW: usize = 1;
 const MENU_EXIT: usize = 2;
 
@@ -56,7 +58,6 @@ struct TrayState {
 #[derive(Default)]
 struct TrayRuntime {
     gui: Option<HWND>,
-    hidden: bool,
 }
 
 thread_local! {
@@ -65,6 +66,12 @@ thread_local! {
 
 static STATE: Mutex<Option<TrayState>> = Mutex::new(None);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+/// Whether `WM_CLOSE` on the GUI window should hide it instead of exiting.
+static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(false);
+/// Set by the tray Exit command so the close guard lets the window die.
+static FORCE_EXIT: AtomicBool = AtomicBool::new(false);
+/// HWND that already has [`close_subclass`] installed, or 0.
+static CLOSE_HOOK: AtomicIsize = AtomicIsize::new(0);
 
 pub struct Tray {
     hwnd: isize,
@@ -141,6 +148,56 @@ pub fn set_language(lang: Lang) {
     }
 }
 
+/// Enable or disable the close-to-tray guard. Called from the GUI thread so the
+/// window subclass is installed by the thread that owns the window.
+pub fn set_close_to_tray(enabled: bool) {
+    CLOSE_TO_TRAY.store(enabled, Ordering::Relaxed);
+    if enabled {
+        install_close_hook();
+    }
+}
+
+fn install_close_hook() {
+    if CLOSE_HOOK.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let Some(hwnd) = find_gui_window() else {
+        return;
+    };
+    let installed = unsafe { SetWindowSubclass(hwnd, Some(close_subclass), CLOSE_SUBCLASS_ID, 0) };
+    if installed.as_bool() {
+        CLOSE_HOOK.store(hwnd.0 as isize, Ordering::Relaxed);
+    } else {
+        log_error(format!(
+            "SetWindowSubclass failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+}
+
+/// Close requests are hidden instead of delivered while close-to-tray is on.
+/// The tray Exit command raises [`FORCE_EXIT`] first, so it still quits.
+unsafe extern "system" fn close_subclass(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if message == WM_CLOSE
+        && CLOSE_TO_TRAY.load(Ordering::Relaxed)
+        && !FORCE_EXIT.load(Ordering::Relaxed)
+    {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+        return LRESULT(0);
+    }
+
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
 type StartResult = std::result::Result<isize, anyhow::Error>;
 
 fn run(sender: mpsc::Sender<StartResult>, id: u64) -> Result<()> {
@@ -212,13 +269,6 @@ fn run(sender: mpsc::Sender<StartResult>, id: u64) -> Result<()> {
         log_error(&message);
         let _ = sender.send(Err(anyhow::anyhow!(message)));
         return Ok(());
-    }
-
-    if unsafe { SetTimer(Some(hwnd), TRAY_TIMER, TRAY_POLL_MS, None) } == 0 {
-        log_error(format!(
-            "SetTimer failed: {}",
-            std::io::Error::last_os_error()
-        ));
     }
 
     let _ = sender.send(Ok(hwnd.0 as isize));
@@ -293,10 +343,6 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
-        WM_TIMER => {
-            poll_minimized();
-            LRESULT(0)
-        }
         WM_COMMAND => {
             match wparam.0 & 0xffff {
                 MENU_SHOW => show_window(),
@@ -307,7 +353,6 @@ unsafe extern "system" fn window_proc(
         }
         WM_CLOSE => {
             unsafe {
-                let _ = KillTimer(Some(hwnd), TRAY_TIMER);
                 let data = notify_data(hwnd);
                 let _ = Shell_NotifyIconW(NIM_DELETE, &data);
                 let _ = DestroyWindow(hwnd);
@@ -382,30 +427,8 @@ fn cached_gui_window() -> Option<HWND> {
     }
 
     let found = find_gui_window();
-    RUNTIME.with(|runtime| {
-        let mut runtime = runtime.borrow_mut();
-        runtime.gui = found;
-        if found.is_none() {
-            runtime.hidden = false;
-        }
-    });
+    RUNTIME.with(|runtime| runtime.borrow_mut().gui = found);
     found
-}
-
-fn poll_minimized() {
-    let Some(hwnd) = cached_gui_window() else {
-        return;
-    };
-    if RUNTIME.with(|runtime| runtime.borrow().hidden) {
-        return;
-    }
-
-    if unsafe { IsIconic(hwnd).as_bool() } {
-        unsafe {
-            let _ = ShowWindow(hwnd, SW_HIDE);
-        }
-        RUNTIME.with(|runtime| runtime.borrow_mut().hidden = true);
-    }
 }
 
 fn show_window() {
@@ -417,11 +440,7 @@ fn show_window() {
         }
     }
 
-    RUNTIME.with(|runtime| {
-        let mut runtime = runtime.borrow_mut();
-        runtime.gui = hwnd;
-        runtime.hidden = false;
-    });
+    RUNTIME.with(|runtime| runtime.borrow_mut().gui = hwnd);
 
     if let Some(state) = STATE.lock().unwrap().as_ref() {
         state
@@ -435,6 +454,8 @@ fn show_window() {
 }
 
 fn exit_window() {
+    // A real exit must work even when the close guard is enabled.
+    FORCE_EXIT.store(true, Ordering::Relaxed);
     if let Some(hwnd) = cached_gui_window().or_else(find_gui_window) {
         unsafe {
             let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));

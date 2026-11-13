@@ -116,17 +116,37 @@ pub fn paint_power_glyph(painter: &Painter, center: Pos2, radius: f32, color: Co
     );
 }
 
+pub fn tabs<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash,
+    selected: &mut T,
+    options: &[(T, &str)],
+) -> bool {
+    segmented_impl(ui, id_salt, selected, options, 30.0, true)
+}
+
 pub fn segmented<T: Copy + PartialEq>(
     ui: &mut Ui,
     id_salt: impl std::hash::Hash,
     selected: &mut T,
     options: &[(T, &str)],
 ) -> bool {
+    segmented_impl(ui, id_salt, selected, options, 24.0, false)
+}
+
+fn segmented_impl<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash,
+    selected: &mut T,
+    options: &[(T, &str)],
+    height: f32,
+    emphasize: bool,
+) -> bool {
     if options.is_empty() {
         return false;
     }
 
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
     let response = ui
         .interact(rect, ui.make_persistent_id(id_salt), Sense::click())
         .on_hover_cursor(CursorIcon::PointingHand);
@@ -160,28 +180,44 @@ pub fn segmented<T: Copy + PartialEq>(
     }
 
     let before = *selected;
+    let radius = CornerRadius::same(if emphasize { 9 } else { 7 });
     let painter = ui.painter();
-    painter.line_segment(
-        [
-            pos2(rect.left(), rect.bottom() - 0.5),
-            pos2(rect.right(), rect.bottom() - 0.5),
-        ],
-        Stroke::new(1.0_f32, theme::line_soft()),
+    painter.rect_filled(rect, radius, theme::input());
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0_f32, theme::line()),
+        egui::StrokeKind::Inside,
     );
 
     for (index, (value, label)) in options.iter().enumerate() {
         let segment = Rect::from_min_size(
-            pos2(rect.left() + index as f32 * segment_width, rect.top()),
-            vec2(segment_width, rect.height()),
+            pos2(rect.left() + index as f32 * segment_width, rect.top() + 2.0),
+            vec2(segment_width, rect.height() - 4.0),
         );
         let is_selected = *value == before;
         let is_hovered = hovered == Some(index);
 
-        if is_hovered && !is_selected {
+        if is_selected || is_hovered {
             painter.rect_filled(
-                segment.shrink2(vec2(2.0, 3.0)),
-                CornerRadius::same(6),
-                theme::alpha(theme::text(), 5),
+                segment.shrink2(vec2(1.0, 0.0)),
+                CornerRadius::same(if emphasize { 7 } else { 5 }),
+                theme::alpha(
+                    theme::accent(),
+                    if is_selected {
+                        if emphasize { 40 } else { 30 }
+                    } else {
+                        12
+                    },
+                ),
+            );
+        }
+        if is_selected {
+            painter.rect_stroke(
+                segment.shrink2(vec2(1.0, 0.0)),
+                CornerRadius::same(if emphasize { 7 } else { 5 }),
+                Stroke::new(1.0_f32, theme::accent()),
+                egui::StrokeKind::Inside,
             );
         }
 
@@ -190,23 +226,13 @@ pub fn segmented<T: Copy + PartialEq>(
         } else {
             theme::muted()
         };
-        let galley = painter.layout_no_wrap((*label).to_owned(), theme::mono_medium(9.0), color);
+        let font = theme::mono_medium(if emphasize { 10.0 } else { 9.0 });
+        let galley = painter.layout_no_wrap((*label).to_owned(), font, color);
         let text_pos = pos2(
             segment.center().x - galley.size().x * 0.5,
             segment.center().y - galley.size().y * 0.5,
         );
-        painter.galley(text_pos, galley.clone(), color);
-
-        if is_selected {
-            let half = galley.size().x * 0.5 + 7.0;
-            painter.line_segment(
-                [
-                    pos2(segment.center().x - half, rect.bottom() - 1.5),
-                    pos2(segment.center().x + half, rect.bottom() - 1.5),
-                ],
-                Stroke::new(1.5_f32, theme::accent()),
-            );
-        }
+        painter.galley(text_pos, galley, color);
     }
 
     if let Some(index) = clicked {
@@ -224,7 +250,7 @@ pub fn parameter_slider(
     step: f64,
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), 14.0),
+        Vec2::new(ui.available_width(), 18.0),
         Sense::click_and_drag(),
     );
     let mut response = response.on_hover_cursor(CursorIcon::ResizeHorizontal);
@@ -232,8 +258,8 @@ pub fn parameter_slider(
     let before = *value;
     if response.dragged() || response.clicked() {
         if let Some(position) = response.interact_pointer_pos() {
-            let left = rect.left() + 7.0;
-            let right = rect.right() - 7.0;
+            let left = rect.left() + 8.0;
+            let right = rect.right() - 8.0;
             let t = ((position.x - left) / (right - left).max(1.0)).clamp(0.0, 1.0);
             let mut next = from_norm(t, &range, logarithmic);
             if step > 0.0 {
@@ -248,51 +274,60 @@ pub fn parameter_slider(
     }
 
     let t = to_norm(*value, &range, logarithmic);
-    let left = rect.left() + 7.0;
-    let right = rect.right() - 7.0;
+    let left = rect.left() + 8.0;
+    let right = rect.right() - 8.0;
     let center_y = rect.center().y;
     let handle_x = left + t * (right - left);
 
+    let hot = response.hovered() || response.dragged();
     let painter = ui.painter();
-    let track = Rect::from_min_max(pos2(left, center_y - 1.5), pos2(right, center_y + 1.5));
+    if hot {
+        painter.circle_filled(
+            pos2(handle_x, center_y),
+            10.0,
+            theme::alpha(theme::accent(), 24),
+        );
+    }
+
+    let track = Rect::from_min_max(pos2(left, center_y - 2.0), pos2(right, center_y + 2.0));
     painter.rect_filled(track, CornerRadius::same(2), theme::line());
 
     if handle_x > left + 0.5 {
-        let fill = Rect::from_min_max(pos2(left, center_y - 1.5), pos2(handle_x, center_y + 1.5));
+        let fill = Rect::from_min_max(pos2(left, center_y - 2.0), pos2(handle_x, center_y + 2.0));
         painter.rect_filled(fill, CornerRadius::same(2), theme::accent());
     }
 
-    let hot = response.hovered() || response.dragged();
     let handle = pos2(handle_x, center_y);
-    let radius = if hot { 5.0 } else { 4.0 };
+    let radius = if hot { 6.5 } else { 5.5 };
     painter.circle_filled(
         handle,
         radius,
         if hot { theme::accent() } else { theme::bg() },
     );
-    painter.circle_stroke(handle, radius, Stroke::new(1.5_f32, theme::accent()));
+    painter.circle_stroke(handle, radius, Stroke::new(2.0_f32, theme::accent()));
 
     response
 }
 
-fn paint_field_background(ui: &Ui, rect: Rect, hovered: bool) {
-    let radius = CornerRadius::same(6);
-    let fill = if hovered {
-        theme::mix(theme::input(), theme::accent(), 0.10)
-    } else {
-        theme::input()
-    };
+fn paint_field_fill(ui: &Ui, rect: Rect) {
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(6), theme::input());
+}
 
-    let painter = ui.painter();
-    painter.rect_filled(rect, radius, fill);
-    if hovered {
-        painter.rect_stroke(
-            rect,
-            radius,
-            Stroke::new(1.0_f32, theme::alpha(theme::accent(), 96)),
-            egui::StrokeKind::Inside,
-        );
-    }
+fn paint_field_border(ui: &Ui, rect: Rect, hovered: bool, focused: bool) {
+    let (color, width) = if focused {
+        (theme::accent(), 1.6)
+    } else if hovered {
+        (theme::alpha(theme::accent(), 150), 1.2)
+    } else {
+        (theme::line(), 1.0_f32)
+    };
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(6),
+        Stroke::new(width, color),
+        egui::StrokeKind::Inside,
+    );
 }
 
 fn suffix_width(ui: &Ui, suffix: &str) -> f32 {
@@ -343,16 +378,19 @@ fn add_field(
     );
 
     let (rect, _) = ui.allocate_exact_size(Vec2::new(FIELD_WIDTH, FIELD_HEIGHT), Sense::hover());
-    let hovered = ui.rect_contains_pointer(rect);
-    paint_field_background(ui, rect, hovered);
+    paint_field_fill(ui, rect);
 
     let mut child = configure_field_child(ui, rect);
-    child
-        .add_sized(
-            Vec2::new(FIELD_WIDTH - 2.0 * FIELD_PADDING, FIELD_HEIGHT - 2.0),
-            value,
-        )
-        .changed()
+    let response = child.add_sized(
+        Vec2::new(FIELD_WIDTH - 2.0 * FIELD_PADDING, FIELD_HEIGHT - 2.0),
+        value,
+    );
+
+    // Paint the border last so it stays crisp over the field content, and give
+    // idle fields a visible outline instead of blending into the panel.
+    let hovered = response.hovered() || ui.rect_contains_pointer(rect);
+    paint_field_border(ui, rect, hovered, response.has_focus());
+    response.changed()
 }
 
 pub fn numeric_field(
@@ -587,8 +625,21 @@ pub fn text_button(ui: &mut Ui, label: &str, idle: Color32, hover: Color32) -> R
         idle
     };
     let painter = ui.painter();
-    if enabled && response.hovered() {
-        painter.rect_filled(rect, CornerRadius::same(6), theme::alpha(hover, 8));
+    let radius = CornerRadius::same(6);
+    if enabled {
+        let (fill, stroke) = if response.hovered() {
+            (
+                theme::alpha(hover, 16),
+                Stroke::new(1.0_f32, theme::alpha(hover, 190)),
+            )
+        } else {
+            (
+                theme::alpha(theme::input(), 210),
+                Stroke::new(1.0_f32, theme::line()),
+            )
+        };
+        painter.rect_filled(rect, radius, fill);
+        painter.rect_stroke(rect, radius, stroke, egui::StrokeKind::Inside);
     }
     let galley = painter.layout_no_wrap(label.to_owned(), theme::sans_medium(10.5), color);
     painter.galley(

@@ -395,26 +395,34 @@ fn visuals(palette: Palette) -> egui::Visuals {
         expansion: 0.0,
     };
     widgets.inactive = egui::style::WidgetVisuals {
-        bg_fill: Color32::TRANSPARENT,
-        weak_bg_fill: Color32::TRANSPARENT,
-        bg_stroke: Stroke::NONE,
-        corner_radius: CornerRadius::same(8),
+        bg_fill: input,
+        weak_bg_fill: input,
+        bg_stroke: Stroke::new(1.0_f32, line),
+        corner_radius: CornerRadius::same(7),
         fg_stroke: Stroke::new(1.0_f32, text),
         expansion: 0.0,
     };
     widgets.hovered = egui::style::WidgetVisuals {
-        bg_fill: alpha(text, if dark { 14 } else { 7 }),
-        weak_bg_fill: alpha(text, if dark { 14 } else { 7 }),
-        bg_stroke: Stroke::NONE,
-        corner_radius: CornerRadius::same(8),
+        bg_fill: mix(input, accent, if dark { 0.14 } else { 0.08 }),
+        weak_bg_fill: mix(input, accent, if dark { 0.14 } else { 0.08 }),
+        bg_stroke: Stroke::new(1.0_f32, alpha(accent, 170)),
+        corner_radius: CornerRadius::same(7),
         fg_stroke: Stroke::new(1.0_f32, text),
         expansion: 0.0,
     };
     widgets.active = egui::style::WidgetVisuals {
-        bg_fill: alpha(accent, if dark { 48 } else { 20 }),
-        weak_bg_fill: alpha(accent, if dark { 48 } else { 20 }),
-        bg_stroke: Stroke::NONE,
-        corner_radius: CornerRadius::same(8),
+        bg_fill: alpha(accent, if dark { 52 } else { 26 }),
+        weak_bg_fill: alpha(accent, if dark { 52 } else { 26 }),
+        bg_stroke: Stroke::new(1.0_f32, accent),
+        corner_radius: CornerRadius::same(7),
+        fg_stroke: Stroke::new(1.0_f32, text),
+        expansion: 0.0,
+    };
+    widgets.open = egui::style::WidgetVisuals {
+        bg_fill: mix(input, accent, if dark { 0.18 } else { 0.10 }),
+        weak_bg_fill: mix(input, accent, if dark { 0.18 } else { 0.10 }),
+        bg_stroke: Stroke::new(1.0_f32, accent),
+        corner_radius: CornerRadius::same(7),
         fg_stroke: Stroke::new(1.0_f32, text),
         expansion: 0.0,
     };

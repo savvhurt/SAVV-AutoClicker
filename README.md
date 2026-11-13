@@ -11,7 +11,11 @@ A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
 
 - 0.2–1000 clicks per second with configurable hold duration and jitter.
 - Per-session click limit: `0` means unlimited, otherwise clicking stops after
-  N clicks. The session counter is shown in the GUI and in `status`.
+  N clicks. The session counter is shown in the GUI and in `status`; the actual
+  rate and session clicks share one two-column readout.
+- **Start guard in cursor mode**: pressing the power button waits 1.5 s before
+  the first click so the pointer can leave the window. Otherwise the synthetic
+  click could land on the interface itself.
 - Start delay of 0–10 000 ms. It applies only to the start of a new session;
   stopping during the delay cancels the start.
 - Left, right and middle mouse button.
@@ -49,8 +53,10 @@ A cross-platform autoclicker written in Rust for **Linux** (Wayland and X11) and
   English.
 - **Autostart on Linux and Windows**: the System tab installs a freedesktop
   entry or a per-user registry value that launches the GUI with the session.
-- **Windows tray**: optionally minimize to the notification area; a left click
-  or the tray menu restores the window, and the menu can exit the app.
+- **Windows tray**: optional **close to tray**. Closing the window hides it in
+  the notification area instead of quitting, while minimizing keeps the normal
+  taskbar button. Left-click the icon or use **Show** to restore the window;
+  **Exit** always quits, even with close-to-tray enabled.
 - **Windows elevation check**: on startup the app detects whether it runs as
   administrator and warns that elevated applications and games ignore clicks
   from a non-elevated process.
@@ -108,15 +114,19 @@ parent console so `status`, `toggle` and `--help` print output as usual. On a
 fatal GUI error, `%APPDATA%\SAVV-AutoClicker\gui-error.log` is written and a
 system message box is shown.
 
-### Prebuilt Windows binaries
+### Prebuilt binaries
 
-The **Windows release** workflow (`.github/workflows/release.yml`) is included:
+The release workflow (`.github/workflows/release.yml`) builds both platforms:
 
-- manual run through **Actions → Windows release → Run workflow** builds
-  `savv-autoclicker-windows-x86_64.zip` and uploads it as an artifact;
-- pushing a `v*` tag additionally creates a GitHub Release with the archive.
+- manual run through **Actions → Release → Run workflow** builds
+  `savv-autoclicker-windows-x86_64.zip` and
+  `savv-autoclicker-linux-x86_64.tar.gz` as artifacts;
+- pushing a `v*` tag additionally creates a GitHub Release with both archives
+  and bilingual notes from `.github/release-notes/<tag>.md`.
 
-The archive contains `savv-autoclicker.exe`, the README and the font license.
+The Windows archive contains `savv-autoclicker.exe`, the README and the font
+license. The Linux archive contains `savv-autoclicker`, the README and the font
+license.
 
 ## Quick start
 
@@ -205,7 +215,7 @@ Tabs:
   shown with a clickable label that copies a ready-to-use line containing the
   full path to the current binary (see “Hotkey” below).
 - **System** — interface language (Auto or one of six languages), theme
-  dropdown, autostart, Windows tray and elevation options, and the
+  dropdown, autostart, Windows close-to-tray and elevation options, and the
   **Restore defaults** button.
 
 The window is designed for 460×560 px at 100% scale; the minimum size is
@@ -260,13 +270,15 @@ and hold-to-click is not supported there.
 On Windows the GUI starts the daemon when the window opens, so the global key
 works immediately without pressing the start button. On Linux the GUI also
 starts the daemon automatically, so clicking works right after the window
-opens. Closing the window disables clicking; the daemon keeps running in the
+opens. Without close-to-tray, closing the window stops clicking and quits the
+Windows daemon; on Linux the independent daemon keeps running in the
 background. Use `savv-autoclicker quit` to stop it.
 
-On Windows, enabling **Minimize to tray** hides the window instead of keeping a
-taskbar button. Left-click the tray icon — or use **Show** in its menu — to
-restore the window; **Exit** closes the app. With tray enabled, autostart
-launches the GUI hidden (`--hidden`), so login does not open a window.
+On Windows, enabling **Close to tray** hides the window when it is closed
+(the title-bar X or Alt+F4) instead of quitting; minimizing still uses the
+taskbar. Left-click the tray icon — or use **Show** in its menu — to restore the
+window; **Exit** always quits and stops the daemon. With close-to-tray enabled,
+autostart launches the GUI hidden (`--hidden`), so login does not open a window.
 
 Windows 11 hides new notification-area icons behind the overflow chevron by
 default. If the icon is not visible next to the clock, open the chevron and drag
@@ -288,7 +300,9 @@ request, so an accidental close does not lose changes.
 
 Memory: on Linux the GUI uses roughly 18–22 MB PSS / 25–30 MB RSS at rest; on
 Windows expect about 20–30 MB private working set. The GUI renders in software
-(CPU), so it pulls in no GPU driver or video memory.
+(CPU), so it pulls in no GPU driver or video memory. While the window is hidden
+in the tray, status updates are coalesced into a bounded queue, so memory stays
+flat even if the hidden window cannot repaint.
 
 ## Linux
 
@@ -440,15 +454,15 @@ compositor owns the global key.
 Enable **Start at login** in the System tab to add the per-user value
 `SAVV-AutoClicker` under
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. The value points at the
-current executable. If **Minimize to tray** is also enabled, autostart adds
+current executable. If **Close to tray** is also enabled, autostart adds
 `--hidden`, so the app starts in the notification area without opening a window.
 Disable the checkbox to remove the value.
 
-With **Minimize to tray** enabled, minimizing the window hides it and keeps the
-app in the notification area. Left-click the tray icon or choose **Show** to
-restore the window; **Exit** closes the app and stops the daemon. On Windows 11
-the icon may first appear in the overflow menu — see the note in the GUI section
-above.
+With **Close to tray** enabled, closing the window hides it and keeps the app in
+the notification area. Minimizing still shows a normal taskbar button.
+Left-click the tray icon or choose **Show** to restore the window; **Exit**
+always quits and stops the daemon. On Windows 11 the icon may first appear in
+the overflow menu — see the note in the GUI section above.
 
 ### Windows limitations
 

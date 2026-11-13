@@ -1,13 +1,21 @@
-name: Windows release
+name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach to (for example v0.4.0). Leave empty for the pushed tag."
+        required: false
+        type: string
   push:
     tags:
       - "v*"
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   windows:
@@ -16,6 +24,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -40,9 +50,59 @@ jobs:
           path: savv-autoclicker-windows-x86_64.zip
           if-no-files-found: error
 
-      - name: Attach archive to GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --features gui
+
+      - name: Package
+        run: |
+          mkdir -p dist/savv-autoclicker-linux-x86_64
+          cp target/release/savv-autoclicker dist/savv-autoclicker-linux-x86_64/
+          cp README.md dist/savv-autoclicker-linux-x86_64/
+          cp assets/fonts/LICENSE.txt dist/savv-autoclicker-linux-x86_64/FONT-LICENSE.txt
+          chmod +x dist/savv-autoclicker-linux-x86_64/savv-autoclicker
+          tar -C dist -czf savv-autoclicker-linux-x86_64.tar.gz savv-autoclicker-linux-x86_64
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: savv-autoclicker-linux-x86_64
+          path: savv-autoclicker-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      # The notes live on the default branch so an older tag can be backfilled
+      # without moving that tag.
+      - uses: actions/checkout@v4
+
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Attach archives to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: savv-autoclicker-windows-x86_64.zip
+          tag_name: ${{ env.TAG }}
+          name: SAVV-AutoClicker ${{ env.TAG }}
+          body_path: .github/release-notes/${{ env.TAG }}.md
+          files: dist/*
           fail_on_unmatched_files: true

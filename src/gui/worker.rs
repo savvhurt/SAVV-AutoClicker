@@ -1,4 +1,6 @@
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -8,7 +10,17 @@ use crate::i18n::{self, Key, Lang, Language};
 use crate::ipc;
 use crate::state::{Settings, Status};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(200);
+/// Clicking changes its counters many times per second, so poll quickly while
+/// a session runs and slowly when the window is only showing an idle daemon.
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(1000);
+/// Re-send an unchanged status once a second. This doubles as a repaint
+/// heartbeat: if the software backend misses a paint request, the window still
+/// refreshes and never shows stale "clicking stopped" data.
+const STATUS_HEARTBEAT: Duration = Duration::from_millis(1000);
+/// A bounded event queue keeps memory flat when the window is hidden in the
+/// tray and the GUI cannot drain status updates.
+const EVENT_QUEUE: usize = 32;
 
 #[derive(Debug)]
 pub enum Command {
@@ -45,12 +57,20 @@ pub struct Worker {
     pub commands: Sender<Command>,
     pub events: Receiver<Event>,
     pub handle: Option<thread::JoinHandle<()>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Worker {
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
 }
 
 struct Session {
     online: bool,
     last_offline: Option<String>,
     last_status: Option<Status>,
+    last_status_sent: Instant,
     hotkey: String,
     hold_hotkey: String,
     lang: Lang,
@@ -64,33 +84,49 @@ impl Worker {
         language: Language,
     ) -> std::io::Result<Self> {
         let (command_tx, command_rx) = channel();
-        let (event_tx, event_rx) = channel();
+        let (event_tx, event_rx) = sync_channel(EVENT_QUEUE);
         let lang = language.resolve();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
 
         let handle = thread::Builder::new()
             .name("savv-autoclicker-gui-ipc".to_string())
-            .spawn(move || run(command_rx, event_tx, ctx, hotkey, hold_hotkey, lang))?;
+            .spawn(move || {
+                run(
+                    command_rx,
+                    event_tx,
+                    ctx,
+                    hotkey,
+                    hold_hotkey,
+                    lang,
+                    thread_stop,
+                )
+            })?;
 
         Ok(Self {
             commands: command_tx,
             events: event_rx,
             handle: Some(handle),
+            stop,
         })
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     commands: Receiver<Command>,
-    events: Sender<Event>,
+    events: SyncSender<Event>,
     ctx: egui::Context,
     hotkey: String,
     hold_hotkey: String,
     lang: Lang,
+    stop: Arc<AtomicBool>,
 ) {
     let mut session = Session {
         online: false,
         last_offline: None,
         last_status: None,
+        last_status_sent: Instant::now(),
         hotkey,
         hold_hotkey,
         lang,
@@ -103,6 +139,10 @@ fn run(
     ensure_daemon(&events, &ctx, &mut session);
 
     loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+
         let timeout = next_poll.saturating_duration_since(Instant::now());
         match commands.recv_timeout(timeout) {
             Ok(Command::Shutdown) => {
@@ -114,7 +154,7 @@ fn run(
             }
             Ok(command) => {
                 handle_command(command, &events, &ctx, &mut session);
-                next_poll = Instant::now() + POLL_INTERVAL;
+                next_poll = Instant::now() + poll_interval(&session);
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -122,14 +162,26 @@ fn run(
 
         if Instant::now() >= next_poll {
             poll(&events, &ctx, &mut session);
-            next_poll = Instant::now() + POLL_INTERVAL;
+            next_poll = Instant::now() + poll_interval(&session);
         }
+    }
+}
+
+fn poll_interval(session: &Session) -> Duration {
+    let busy = session
+        .last_status
+        .as_ref()
+        .is_some_and(|status| status.enabled || status.starting);
+    if busy {
+        ACTIVE_POLL_INTERVAL
+    } else {
+        IDLE_POLL_INTERVAL
     }
 }
 
 fn handle_command(
     command: Command,
-    events: &Sender<Event>,
+    events: &SyncSender<Event>,
     ctx: &egui::Context,
     session: &mut Session,
 ) {
@@ -365,7 +417,7 @@ fn handle_command(
                 Ok(()) => {
                     session.online = false;
                     session.last_offline = None;
-                    let _ = events.send(Event::Stopped);
+                    let _ = events.try_send(Event::Stopped);
                 }
                 Err(error) => {
                     send_error(
@@ -385,15 +437,23 @@ fn handle_command(
     ctx.request_repaint();
 }
 
-fn poll(events: &Sender<Event>, ctx: &egui::Context, session: &mut Session) {
+fn poll(events: &SyncSender<Event>, ctx: &egui::Context, session: &mut Session) {
     match ipc::send("STATUS") {
         Ok(response) => match Status::from_wire(&response) {
             Ok(status) => {
                 session.online = true;
                 session.last_offline = None;
-                if session.last_status.as_ref() != Some(&status) {
-                    session.last_status = Some(status.clone());
-                    let _ = events.send(Event::Status(Box::new(status)));
+                let changed = session.last_status.as_ref() != Some(&status);
+                let heartbeat = session.last_status_sent.elapsed() >= STATUS_HEARTBEAT;
+
+                if changed || heartbeat {
+                    if changed {
+                        session.last_status = Some(status.clone());
+                    }
+                    // Dropping a status when the queue is full is safe: the
+                    // next heartbeat carries an even newer one.
+                    let _ = events.try_send(Event::Status(Box::new(status)));
+                    session.last_status_sent = Instant::now();
                     ctx.request_repaint();
                 }
             }
@@ -411,15 +471,15 @@ fn poll(events: &Sender<Event>, ctx: &egui::Context, session: &mut Session) {
             let message = format!("{error:#}");
             if session.last_offline.as_deref() != Some(message.as_str()) {
                 session.last_offline = Some(message.clone());
-                let _ = events.send(Event::Offline(message));
+                let _ = events.try_send(Event::Offline(message));
                 ctx.request_repaint();
             }
         }
     }
 }
 
-fn send_error(events: &Sender<Event>, ctx: &egui::Context, message: String) {
-    let _ = events.send(Event::Error(message));
+fn send_error(events: &SyncSender<Event>, ctx: &egui::Context, message: String) {
+    let _ = events.try_send(Event::Error(message));
     ctx.request_repaint();
 }
 
@@ -430,7 +490,7 @@ fn message(lang: Lang, key: Key, detail: impl std::fmt::Display) -> String {
         .replace("{}", &detail)
 }
 
-fn ensure_daemon(events: &Sender<Event>, ctx: &egui::Context, session: &mut Session) {
+fn ensure_daemon(events: &SyncSender<Event>, ctx: &egui::Context, session: &mut Session) {
     match ipc::send_or_spawn_with_hotkeys(
         "STATUS",
         &session.hotkey,

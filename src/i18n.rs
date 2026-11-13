@@ -214,6 +214,30 @@ define_strings! {
         "{} cliques da sessão. Inicie novamente ou altere o limite."
     ],
     HeroStopped: ["Clicks stopped", "Клики остановлены", "Klicks gestoppt", "Clics arrêtés", "Clics detenidos", "Cliques parados"],
+    HeroMovePointer: [
+        "Move the pointer",
+        "Уведите курсор",
+        "Cursor bewegen",
+        "Déplacez le curseur",
+        "Mueve el cursor",
+        "Mova o cursor"
+    ],
+    StartGuardText: [
+        "Cursor mode starts in 1.5 s. Move the pointer outside the window so the clicks do not hit the interface.",
+        "Режим курсора запустится через 1,5 с. Уведите курсор за пределы окна, чтобы клики не попадали в интерфейс.",
+        "Der Cursormodus startet in 1,5 s. Bewege den Cursor aus dem Fenster, damit die Klicks nicht die Oberfläche treffen.",
+        "Le mode curseur démarre dans 1,5 s. Déplacez le curseur hors de la fenêtre pour que les clics ne touchent pas l'interface.",
+        "El modo cursor empieza en 1,5 s. Mueve el cursor fuera de la ventana para que los clics no afecten a la interfaz.",
+        "O modo cursor começa em 1,5 s. Mova o cursor para fora da janela para que os cliques não atinjam a interface."
+    ],
+    StartGuardNotice: [
+        "Cursor mode: move the pointer away from the window, clicking starts in 1.5 s.",
+        "Режим курсора: уведите курсор из окна, клики начнутся через 1,5 с.",
+        "Cursormodus: Bewege den Cursor aus dem Fenster, die Klicks starten in 1,5 s.",
+        "Mode curseur : éloignez le curseur de la fenêtre, les clics commencent dans 1,5 s.",
+        "Modo cursor: aleja el cursor de la ventana, los clics empiezan en 1,5 s.",
+        "Modo cursor: afaste o cursor da janela, os cliques começam em 1,5 s."
+    ],
     HeroPressStart: [
         "Press the button to start.",
         "Нажмите кнопку, чтобы начать.",
@@ -231,8 +255,14 @@ define_strings! {
         "O daemon iniciará automaticamente."
     ],
     MetricCps: ["ACTUAL RATE", "ФАКТ. СКОРОСТЬ", "ECHTE RATE", "DÉBIT RÉEL", "TASA REAL", "TAXA REAL"],
-    MetricClicks: ["CLICKS", "КЛИКОВ", "KLICKS", "CLICS", "CLICS", "CLIQUES"],
-    MetricSession: ["SESSION", "СЕССИЯ", "SITZUNG", "SESSION", "SESIÓN", "SESSÃO"],
+    MetricSession: [
+        "SESSION CLICKS",
+        "КЛИКОВ ЗА СЕССИЮ",
+        "SITZUNGSKLICKS",
+        "CLICS DE LA SESSION",
+        "CLICS DE LA SESIÓN",
+        "CLIQUES DA SESSÃO"
+    ],
     UnitPieces: ["PCS", "ШТ", "STK", "PCS", "UDS", "UN"],
     UnitMs: ["MS", "МС", "MS", "MS", "MS", "MS"],
     Enabled: ["ON", "ВКЛ", "EIN", "ACTIF", "ACTIVADO", "ATIVADO"],
@@ -653,14 +683,14 @@ define_strings! {
         "Secuencia de {} puntos.",
         "Sequência de {} pontos."
     ],
-    RowMinimizeTray: ["Minimize to tray", "Сворачивать в трей", "In den Infobereich minimieren", "Réduire dans la zone de notification", "Minimizar a la bandeja", "Minimizar para a bandeja"],
+    RowMinimizeTray: ["Close to tray", "Закрывать в трей", "Schließen in den Infobereich", "Fermer dans la zone de notification", "Cerrar a la bandeja", "Fechar para a bandeja"],
     HintMinimizeTray: [
-        "Keep the app in the notification area when minimized",
-        "Оставлять приложение в области уведомлений при сворачивании",
-        "Die App beim Minimieren im Infobereich behalten",
-        "Garder l'application dans la zone de notification lorsqu'elle est réduite",
-        "Mantener la aplicación en el área de notificación al minimizar",
-        "Manter a aplicação na área de notificação ao minimizar"
+        "Hide the window in the notification area when it is closed. Minimizing still uses the taskbar.",
+        "Скрывать окно в области уведомлений при закрытии. Сворачивание по-прежнему уходит на панель задач.",
+        "Das Fenster beim Schließen im Infobereich verbergen. Minimieren nutzt weiterhin die Taskleiste.",
+        "Masquer la fenêtre dans la zone de notification à la fermeture. Réduire utilise toujours la barre des tâches.",
+        "Ocultar la ventana en el área de notificación al cerrarla. Minimizar sigue usando la barra de tareas.",
+        "Ocultar a janela na área de notificação ao fechar. Minimizar continua usando a barra de tarefas."
     ],
     TrayShow: ["Show", "Показать", "Anzeigen", "Afficher", "Mostrar", "Mostrar"],
     TrayExit: ["Exit", "Выход", "Beenden", "Quitter", "Salir", "Sair"],
@@ -673,12 +703,12 @@ define_strings! {
         "Não foi possível criar o ícone da bandeja: {}"
     ],
     TrayEnabled: [
-        "Minimize to tray enabled.",
-        "Сворачивание в трей включено.",
-        "Minimieren in den Infobereich aktiviert.",
-        "Réduction dans la zone de notification activée.",
-        "Minimizar a la bandeja activado.",
-        "Minimizar para a bandeja ativado."
+        "Close to tray enabled.",
+        "Закрытие в трей включено.",
+        "Schließen in den Infobereich aktiviert.",
+        "Fermeture dans la zone de notification activée.",
+        "Cierre a la bandeja activado.",
+        "Fechamento para a bandeja ativado."
     ],
     ElevationWarn: [
         "Not running as administrator: clicks are ignored by elevated apps and games.",
@@ -957,6 +987,14 @@ define_strings! {
         "Réponse invalide du démon : {:#}",
         "Respuesta no válida del daemon: {:#}",
         "Resposta inválida do daemon: {:#}"
+    ],
+    WorkerReconnect: [
+        "The interface lost contact with the daemon and reconnected.",
+        "Интерфейс потерял связь с демоном и переподключился.",
+        "Die Oberfläche hat die Verbindung zum Daemon verloren und neu verbunden.",
+        "L'interface a perdu le contact avec le démon et s'est reconnectée.",
+        "La interfaz perdió el contacto con el daemon y se reconectó.",
+        "A interface perdeu o contato com o daemon e se reconectou."
     ],
 }
 

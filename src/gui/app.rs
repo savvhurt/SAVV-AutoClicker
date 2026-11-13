@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -20,10 +22,13 @@ use crate::state::{
 const APPLY_DEBOUNCE: Duration = Duration::from_millis(250);
 const SYNC_GRACE: Duration = Duration::from_millis(800);
 const TOGGLE_TIMEOUT: Duration = Duration::from_secs(3);
+const STATUS_STALE_AFTER: Duration = Duration::from_secs(3);
+const WORKER_RESTART_COOLDOWN: Duration = Duration::from_secs(10);
+const START_GUARD: Duration = Duration::from_millis(1500);
 const CONTENT_WIDTH: f32 = 424.0;
 const WINDOW_SIZE: [f32; 2] = [460.0, 560.0];
 const MIN_WINDOW_SIZE: [f32; 2] = [420.0, 520.0];
-const MIN_LABEL_WIDTH: f32 = 120.0;
+const LABEL_WIDTH: f32 = 124.0;
 const MIN_AUTO_SCALE: f32 = 0.75;
 const MAX_AUTO_SCALE: f32 = 1.0;
 const SCREEN_MARGIN_X: f32 = 48.0;
@@ -187,7 +192,6 @@ pub struct GuiApp {
     online: bool,
     enabled: bool,
     actual_cps: f64,
-    clicks: u64,
     session_clicks: u64,
     starting: bool,
     delay_left_ms: u64,
@@ -207,17 +211,22 @@ pub struct GuiApp {
     #[cfg_attr(not(windows), allow(dead_code))]
     last_hold_hotkey_sync: Option<Instant>,
     last_hotkey_sync: Option<Instant>,
+    last_status_at: Option<Instant>,
+    last_worker_restart: Option<Instant>,
     notice: Option<String>,
     offline_reason: Option<String>,
     initialized: bool,
     draft_changed_at: Option<Instant>,
     last_apply_sent: Option<Instant>,
     pending_toggle: Option<(bool, Instant)>,
+    start_guard: Option<u64>,
+    start_token: Arc<AtomicU64>,
     #[cfg(not(windows))]
     confirm_quit: bool,
     commands: Sender<Command>,
     events: Receiver<Event>,
     worker: Option<thread::JoinHandle<()>>,
+    worker_stop: Arc<AtomicBool>,
 }
 
 impl GuiApp {
@@ -233,6 +242,7 @@ impl GuiApp {
             config.language,
         )
         .expect("failed to start the SAVV-AutoClicker GUI IPC worker");
+        let worker_stop = worker.stop_flag();
         let autostart_enabled = crate::autostart::is_enabled();
 
         #[cfg_attr(not(windows), allow(unused_mut))]
@@ -258,7 +268,6 @@ impl GuiApp {
             online: false,
             enabled: false,
             actual_cps: 0.0,
-            clicks: 0,
             session_clicks: 0,
             starting: false,
             delay_left_ms: 0,
@@ -275,17 +284,22 @@ impl GuiApp {
             legacy_restart_pending: false,
             last_hold_hotkey_sync: None,
             last_hotkey_sync: None,
+            last_status_at: None,
+            last_worker_restart: None,
             notice: loaded.warning,
             offline_reason: None,
             initialized: false,
             draft_changed_at: None,
             last_apply_sent: None,
             pending_toggle: None,
+            start_guard: None,
+            start_token: Arc::new(AtomicU64::new(0)),
             #[cfg(not(windows))]
             confirm_quit: false,
             commands: worker.commands,
             events: worker.events,
             worker: worker.handle,
+            worker_stop,
         };
 
         #[cfg(windows)]
@@ -359,14 +373,118 @@ impl GuiApp {
         self.daemon_hotkey_error = None;
         self.last_hotkey_sync = None;
         self.last_hold_hotkey_sync = None;
+        self.last_status_at = None;
         self.initialized = false;
         self.last_apply_sent = None;
+    }
+
+    /// Restart the IPC thread if it stopped delivering status updates while
+    /// the daemon is online. A detached old thread is asked to stop through
+    /// its atomic flag; a fresh thread reconnects and brings the window back
+    /// to live data without restarting the whole GUI.
+    fn restart_worker(&mut self, ctx: &egui::Context) {
+        self.worker_stop.store(true, Ordering::Relaxed);
+        // Do not join: a stuck old thread must not freeze the interface. The
+        // stop flag makes it exit at the next timeout.
+        self.worker.take();
+        self.last_worker_restart = Some(Instant::now());
+        self.last_status_at = None;
+
+        match Worker::spawn(
+            ctx.clone(),
+            self.hotkey.clone(),
+            self.hold_hotkey.clone(),
+            self.language,
+        ) {
+            Ok(worker) => {
+                self.worker_stop = worker.stop_flag();
+                self.commands = worker.commands;
+                self.events = worker.events;
+                self.worker = worker.handle;
+                self.online = false;
+            }
+            Err(error) => {
+                self.notice = Some(format!("{}: {error}", self.t(Key::WorkerReconnect)));
+            }
+        }
+    }
+
+    fn check_worker_health(&mut self, ctx: &egui::Context) {
+        if !self.online {
+            return;
+        }
+        let Some(last) = self.last_status_at else {
+            return;
+        };
+        if last.elapsed() < STATUS_STALE_AFTER {
+            return;
+        }
+        if self
+            .last_worker_restart
+            .is_some_and(|restart| restart.elapsed() < WORKER_RESTART_COOLDOWN)
+        {
+            return;
+        }
+
+        self.notice = Some(self.t(Key::WorkerReconnect).to_string());
+        self.restart_worker(ctx);
+    }
+
+    fn cancel_start_guard(&mut self) {
+        if self.start_guard.take().is_some() {
+            self.start_token.fetch_add(1, Ordering::Relaxed);
+            self.notice = None;
+        }
+    }
+
+    /// In cursor mode the first click lands wherever the pointer is, which may
+    /// be the power button itself. Give the user a moment to move the pointer
+    /// outside the window before the session starts.
+    fn request_start(&mut self) {
+        if self.settings.mode != ClickMode::Cursor {
+            self.request_toggle(true);
+            return;
+        }
+
+        let settings = match self.settings.to_settings() {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.notice = Some(error);
+                return;
+            }
+        };
+
+        let generation = self.start_token.fetch_add(1, Ordering::Relaxed) + 1;
+        let token = self.start_token.clone();
+        let commands = self.commands.clone();
+        let spawned = thread::Builder::new()
+            .name("savv-autoclicker-start-guard".to_string())
+            .spawn(move || {
+                thread::sleep(START_GUARD);
+                if token.load(Ordering::Relaxed) == generation {
+                    let _ = commands.send(Command::Start(settings));
+                }
+            });
+
+        match spawned {
+            Ok(_) => {
+                self.start_guard = Some(generation);
+                self.notice = Some(self.t(Key::StartGuardNotice).to_string());
+            }
+            Err(error) => {
+                self.start_token.fetch_add(1, Ordering::Relaxed);
+                self.notice = Some(format!("{}: {error}", self.t(Key::StartGuardNotice)));
+            }
+        }
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Status(status) => self.apply_status(*status),
+                Event::Status(status) => {
+                    self.last_status_at = Some(Instant::now());
+                    self.apply_status(*status);
+                }
                 Event::Offline(reason) => {
                     self.clear_daemon_state();
                     self.offline_reason = Some(reason);
@@ -408,12 +526,14 @@ impl GuiApp {
         self.offline_reason = None;
         self.enabled = status.enabled;
         self.actual_cps = status.actual_cps;
-        self.clicks = status.clicks;
         self.session_clicks = status.session_clicks;
         self.starting = status.starting;
         self.delay_left_ms = status.delay_left_ms;
         self.stop_reason = status.stop_reason;
         self.hold_active = status.hold_active;
+        if status.enabled || status.starting {
+            self.start_guard = None;
+        }
         self.daemon_error = status.last_error.clone();
         self.daemon_hotkey_active = status.hotkey_active.clone();
         self.daemon_hold_hotkey_active = status.hold_hotkey_active.clone();
@@ -731,6 +851,7 @@ impl GuiApp {
 
     #[cfg(windows)]
     fn sync_tray(&mut self, ctx: &egui::Context) {
+        super::tray::set_close_to_tray(self.minimize_to_tray);
         if self.minimize_to_tray {
             if self.tray.is_none() {
                 match super::tray::Tray::start(ctx.clone(), self.lang) {
@@ -911,6 +1032,7 @@ impl GuiApp {
                 Err(error) => self.notice = Some(error),
             }
         } else {
+            self.cancel_start_guard();
             self.notice = None;
             self.pending_toggle = Some((false, Instant::now()));
             let _ = self.commands.send(Command::Stop);
@@ -925,6 +1047,9 @@ impl GuiApp {
     }
 
     fn status_palette(&self) -> (&'static str, Color32, bool) {
+        if self.start_guard.is_some() {
+            return (self.t(Key::StatusStarting), theme::accent(), true);
+        }
         if let Some((start, _)) = self.pending_toggle {
             return (
                 if start {
@@ -998,6 +1123,11 @@ impl GuiApp {
                 .to_string(),
                 self.t(Key::HeroWaitDaemon).to_string(),
             )
+        } else if self.start_guard.is_some() {
+            (
+                self.t(Key::HeroMovePointer).to_string(),
+                self.t(Key::StartGuardText).to_string(),
+            )
         } else if self.starting {
             (
                 self.fill(
@@ -1046,9 +1176,16 @@ impl GuiApp {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            let response = widgets::power_button(ui, active, pending.is_some(), 68.0);
+            let busy = pending.is_some() || self.start_guard.is_some();
+            let response = widgets::power_button(ui, active, busy, 68.0);
             if response.clicked() && pending.is_none() {
-                self.request_toggle(!active);
+                if self.start_guard.is_some() {
+                    self.cancel_start_guard();
+                } else if active {
+                    self.request_toggle(false);
+                } else {
+                    self.request_start();
+                }
             }
 
             ui.add_space(12.0);
@@ -1082,18 +1219,12 @@ impl GuiApp {
     fn draw_metrics(&self, ui: &mut Ui) {
         theme::rule(ui);
         ui.add_space(2.0);
-        ui.columns(3, |columns| {
+        ui.columns(2, |columns| {
             metric(
                 &mut columns[0],
                 self.t(Key::MetricCps),
                 &format!("{:.1}", self.actual_cps),
                 "CPS",
-            );
-            metric(
-                &mut columns[1],
-                self.t(Key::MetricClicks),
-                &group_digits(self.clicks),
-                self.t(Key::UnitPieces),
             );
             let session = group_digits(self.session_clicks);
             let limit = if self.settings.limit > 0 {
@@ -1102,7 +1233,7 @@ impl GuiApp {
                 self.t(Key::UnitPieces).to_string()
             };
             metric(
-                &mut columns[2],
+                &mut columns[1],
                 self.t(Key::MetricSession),
                 &session,
                 &limit,
@@ -1166,7 +1297,7 @@ impl GuiApp {
 
     fn draw_tabs(&mut self, ui: &mut Ui) {
         let mut tab = self.tab;
-        let changed = widgets::segmented(
+        let changed = widgets::tabs(
             ui,
             "main_tabs",
             &mut tab,
@@ -1613,14 +1744,21 @@ impl GuiApp {
             self.t(Key::RowLanguage),
             self.t(Key::HintLanguage),
             |ui| {
-                egui::ComboBox::from_id_salt("language")
-                    .width(ui.available_width().min(190.0))
-                    .selected_text(selected.native_label())
-                    .show_ui(ui, |ui| {
-                        for language in Language::ALL {
-                            ui.selectable_value(&mut selected, language, language.native_label());
-                        }
-                    });
+                let width = ui.available_width().min(210.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    egui::ComboBox::from_id_salt("language")
+                        .width(width)
+                        .selected_text(selected.native_label())
+                        .show_ui(ui, |ui| {
+                            for language in Language::ALL {
+                                ui.selectable_value(
+                                    &mut selected,
+                                    language,
+                                    language.native_label(),
+                                );
+                            }
+                        });
+                });
                 false
             },
         );
@@ -1632,14 +1770,17 @@ impl GuiApp {
 
         let mut selected = self.theme;
         let _ = compact_choice_row(ui, self.t(Key::RowTheme), self.t(Key::HintTheme), |ui| {
-            egui::ComboBox::from_id_salt("theme")
-                .width(ui.available_width().min(190.0))
-                .selected_text(self.theme_label(selected))
-                .show_ui(ui, |ui| {
-                    for theme in Theme::ALL {
-                        ui.selectable_value(&mut selected, theme, self.theme_label(theme));
-                    }
-                });
+            let width = ui.available_width().min(210.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                egui::ComboBox::from_id_salt("theme")
+                    .width(width)
+                    .selected_text(self.theme_label(selected))
+                    .show_ui(ui, |ui| {
+                        for theme in Theme::ALL {
+                            ui.selectable_value(&mut selected, theme, self.theme_label(theme));
+                        }
+                    });
+            });
             false
         });
         if selected != self.theme {
@@ -2192,6 +2333,7 @@ impl egui_software_backend::App for GuiApp {
 
         self.capture_hotkey(ui.ctx());
         self.drain_events(ui.ctx());
+        self.check_worker_health(ui.ctx());
         self.maybe_apply_settings();
 
         egui::CentralPanel::default()
@@ -2339,8 +2481,7 @@ fn row_label(ui: &mut Ui, title: &str, hint: &str, height: f32) -> egui::Respons
     let galley =
         ui.painter()
             .layout_no_wrap(title.to_owned(), theme::sans_medium(12.5), theme::text());
-    let width = (galley.size().x.ceil() + 2.0).max(MIN_LABEL_WIDTH);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(LABEL_WIDTH, height), Sense::hover());
     ui.painter().galley(
         egui::pos2(rect.left(), rect.center().y - galley.size().y * 0.5),
         galley,
