@@ -1,14 +1,21 @@
+<p align="center">
+  <a href="https://github.com/savvhurt/V-AutoClicker/releases">
+    <img src="https://img.shields.io/github/downloads/savvhurt/V-AutoClicker/total?style=for-the-badge&color=brightgreen&label=DOWNLOADS" alt="Downloads">
+  </a>
+  <a href="https://github.com/savvhurt/V-AutoClicker/releases/latest">
+    <img src="https://img.shields.io/github/v/release/savvhurt/V-AutoClicker?style=for-the-badge&color=blue&label=VERSION&sort=semver" alt="Version">
+  </a>
+  <a href="https://github.com/savvhurt/V-AutoClicker/stargazers">
+    <img src="https://img.shields.io/github/stars/savvhurt/V-AutoClicker?style=for-the-badge&color=yellow" alt="Stars">
+  </a>
+</p>
+
 <div align="center">
 
 # V-AutoClicker
 
 **A fast, minimal autoclicker for Windows and Linux.**<br>
 Native input, three click modes, twelve themes, one small binary.
-
-[![Release](https://img.shields.io/github/v/release/savvhurt/V-AutoClicker?style=flat-square)](https://github.com/savvhurt/V-AutoClicker/releases/latest)
-[![CI](https://github.com/savvhurt/V-AutoClicker/actions/workflows/ci.yml/badge.svg)](https://github.com/savvhurt/V-AutoClicker/actions/workflows/ci.yml)
-![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-4c566a?style=flat-square)
-![Rust](https://img.shields.io/badge/rust-1.92%2B-d08770?style=flat-square)
 
 [Download](https://github.com/savvhurt/V-AutoClicker/releases/latest) ·
 [CLI](#cli) ·
@@ -20,8 +27,8 @@ Native input, three click modes, twelve themes, one small binary.
 
 ## Highlights
 
-- **0.2–1000 CPS** with hold duration, jitter, start delay and a per-session limit.
-- **Cursor, Point and Sequence modes** — click where the mouse is, at fixed
+- **0.2-1000 CPS** with hold duration, jitter, start delay and a per-session limit.
+- **Cursor, Point and Sequence modes** - click where the mouse is, at fixed
   coordinates, or through up to 16 points in order.
 - **Eyedropper** for capturing coordinates; single, double and triple clicks.
 - **Global hotkeys** on Windows, compositor bindings on Linux.
@@ -162,18 +169,18 @@ v-autoclicker on --cps 20 --multi-click 2 --x 640 --y 360
 
 | Option | Default | Description |
 |---|---:|---|
-| `--cps N` | `50` | Clicks per second, `0.2–1000` |
+| `--cps N` | `50` | Clicks per second, `0.2-1000` |
 | `--button left\|right\|middle` | `left` | Mouse button |
-| `--hold-ms MS` | `10` | Button hold time, `0.1–5000` |
-| `--jitter-pct PCT` | `0` | Random interval deviation, `0–100` |
+| `--hold-ms MS` | `10` | Button hold time, `0.1-5000` |
+| `--jitter-pct PCT` | `0` | Random interval deviation, `0-100` |
 | `--limit N` | `0` | Clicks per session; `0` means unlimited |
-| `--delay-ms MS` | `0` | Delay before a new session, `0–10000` |
+| `--delay-ms MS` | `0` | Delay before a new session, `0-10000` |
 | `--multi-click N` | `1` | Clicks per pulse: `1`, `2` or `3` |
-| `--x X`, `--y Y` | — | Fixed point; both are required together |
-| `--duration-secs SECS` | — | `run` only: stop after N seconds |
+| `--x X`, `--y Y` | - | Fixed point; both are required together |
+| `--duration-secs SECS` | - | `run` only: stop after N seconds |
 | `--hotkey COMBO` | `ctrl+alt+c` | Windows only, applied live |
-| `--hold-hotkey COMBO` | — | Windows hold-to-click key |
-| `--detach` | — | `daemon` only: continue in the background |
+| `--hold-hotkey COMBO` | - | Windows hold-to-click key |
+| `--detach` | - | `daemon` only: continue in the background |
 
 Sequence mode and its interval are configured in the GUI.
 
