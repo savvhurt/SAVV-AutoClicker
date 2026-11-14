@@ -14,7 +14,7 @@
 
 # V-AutoClicker
 
-**A fast, minimal autoclicker for Windows and Linux.**<br>
+**A fast, minimal, lightweight autoclicker written on Rust for Windows and Linux.**<br>
 Native input, three click modes, twelve themes, one small binary.
 
 [Download](https://github.com/savvhurt/V-AutoClicker/releases/latest) ·
