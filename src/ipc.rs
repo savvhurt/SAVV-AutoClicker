@@ -28,38 +28,6 @@ fn socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
     platform::pipe_name().to_ns_name::<GenericNamespaced>()
 }
 
-#[cfg(unix)]
-fn legacy_socket_names() -> Vec<interprocess::local_socket::Name<'static>> {
-    platform::legacy_socket_paths()
-        .into_iter()
-        .filter_map(|path| path.to_fs_name::<GenericFilePath>().ok())
-        .collect()
-}
-
-#[cfg(windows)]
-fn legacy_socket_names() -> Vec<interprocess::local_socket::Name<'static>> {
-    platform::legacy_pipe_names()
-        .into_iter()
-        .filter_map(|name| name.to_ns_name::<GenericNamespaced>().ok())
-        .collect()
-}
-
-/// Ask a daemon from a pre-rename version to quit. The old and new versions
-/// use different sockets, so without this both could press the mouse.
-pub fn quit_legacy_daemon() {
-    for name in legacy_socket_names() {
-        let Ok(mut stream) = Stream::connect(name) else {
-            continue;
-        };
-        let _ = stream.set_recv_timeout(Some(Duration::from_millis(500)));
-        let _ = stream.set_send_timeout(Some(Duration::from_millis(500)));
-        let _ = writeln!(stream, "QUIT");
-        let _ = stream.flush();
-        let mut response = String::new();
-        let _ = stream.read_to_string(&mut response);
-    }
-}
-
 pub fn create_listener() -> io::Result<Listener> {
     #[cfg(unix)]
     {
@@ -418,7 +386,7 @@ fn parse_settings(
                     let (x, y) = read_point(&mut parts)?;
                     target = Some(Point::new(x, y));
                 }
-                ClickMode::Sequence => {
+                ClickMode::Sequence | ClickMode::Parallel => {
                     interval_ms = parts
                         .next()
                         .ok_or_else(|| "ERR sequence requires interval_ms\n".to_string())?
@@ -596,6 +564,30 @@ mod tests {
         assert_eq!(status.settings.point_at(0), Some(Point::new(-10, 20)));
         assert_eq!(status.settings.point_at(2), Some(Point::new(500, 600)));
         assert!((status.settings.point_interval_ms() - 250.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_command_accepts_parallel_mode() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert_eq!(
+            process("SET 50 left 10 0 0 0 1 parallel 150 2 1 2 3 4", &shared),
+            "OK\n"
+        );
+
+        let status = shared.status();
+        assert_eq!(status.settings.mode, ClickMode::Parallel);
+        assert_eq!(status.settings.point_count(), 2);
+        assert_eq!(status.settings.point_at(1), Some(Point::new(3, 4)));
+        assert!((status.settings.point_interval_ms() - 150.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn on_command_rejects_a_single_point_parallel_session() {
+        let shared = SharedState::new(Settings::default(), false);
+
+        assert!(process("ON 50 left 10 0 0 0 1 parallel 100 1 10 20", &shared).starts_with("ERR "));
+        assert!(!shared.status().enabled);
     }
 
     #[test]

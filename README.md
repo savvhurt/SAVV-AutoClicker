@@ -15,7 +15,7 @@
 # V-AutoClicker
 
 **A fast, minimal autoclicker for Windows and Linux.**<br>
-Native input, three click modes, twelve themes, one small binary.
+Native input, four click modes, twelve themes, one small binary.
 
 [Download](https://github.com/savvhurt/V-AutoClicker/releases/latest) ·
 [CLI](#cli) ·
@@ -28,8 +28,9 @@ Native input, three click modes, twelve themes, one small binary.
 ## Highlights
 
 - **0.2-1000 CPS** with hold duration, jitter, start delay and a per-session limit.
-- **Cursor, Point and Sequence modes** - click where the mouse is, at fixed
-  coordinates, or through up to 16 points in order.
+- **Cursor, Point, Sequence and Parallel modes** - click where the mouse is,
+  at fixed coordinates, through up to 16 points in order, or at every point
+  once per round.
 - **Eyedropper** for capturing coordinates; single, double and triple clicks.
 - **Global hotkeys** on Windows, compositor bindings on Linux.
 - **Hold-to-click** on Windows with a second hotkey.
@@ -114,10 +115,10 @@ binds {
 For GNOME or KDE create a custom shortcut with the command `v-autoclicker toggle`.
 Do not use `Mod+Shift+C` in niri: it is already bound to `center-column`.
 
-### Point and sequence modes
+### Point, sequence and parallel modes
 
-Point and sequence modes use `XWarpPointer`. They work on X11 and XWayland but
-not in native Wayland windows; the GUI shows a notice on Wayland.
+Point, sequence and parallel modes use `XWarpPointer`. They work on X11 and
+XWayland but not in native Wayland windows; the GUI shows a notice on Wayland.
 
 ## Windows
 
@@ -182,7 +183,9 @@ v-autoclicker on --cps 20 --multi-click 2 --x 640 --y 360
 | `--hold-hotkey COMBO` | - | Windows hold-to-click key |
 | `--detach` | - | `daemon` only: continue in the background |
 
-Sequence mode and its interval are configured in the GUI.
+Sequence and Parallel modes and their intervals are configured in the GUI.
+Parallel mode clicks every point once per round with a minimal gap, then waits
+for the round interval. It needs at least two points.
 
 ## GUI and themes
 
@@ -251,13 +254,6 @@ cargo xwin build --release --features gui --target x86_64-pc-windows-msvc
 
 The result is
 `target/x86_64-pc-windows-msvc/release/v-autoclicker.exe`.
-
-## Migration from older versions
-
-`V-AutoClicker` replaces both `SAVV-AutoClicker` and the original
-`autoclicker`. On first launch it imports the old `gui.toml`, removes old
-autostart entries and stops a daemon left running by a previous version. Your
-theme, hotkeys and click settings are preserved.
 
 ## Development
 

@@ -134,6 +134,25 @@ pub fn segmented<T: Copy + PartialEq>(
     segmented_impl(ui, id_salt, selected, options, 24.0, false)
 }
 
+/// Two rows of two segments. Four long mode names do not fit in one row at
+/// the minimum window width, so they use a 2x2 grid instead.
+pub fn segmented_grid2<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash,
+    selected: &mut T,
+    options: &[(T, &str)],
+) -> bool {
+    if options.is_empty() {
+        return false;
+    }
+
+    let mut changed = false;
+    for (row, chunk) in options.chunks(2).enumerate() {
+        changed |= segmented_impl(ui, (&id_salt, row), selected, chunk, 22.0, false);
+    }
+    changed
+}
+
 fn segmented_impl<T: Copy + PartialEq>(
     ui: &mut Ui,
     id_salt: impl std::hash::Hash,

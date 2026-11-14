@@ -605,6 +605,7 @@ define_strings! {
         "Tecla de segurar desativada."
     ],
     TargetSequence: ["SEQUENCE", "ПОСЛЕДОВАТЕЛЬНО", "SEQUENZ", "SÉQUENCE", "SECUENCIA", "SEQUÊNCIA"],
+    TargetParallel: ["PARALLEL", "ПАРАЛЛЕЛЬНО", "PARALLEL", "PARALLÈLE", "PARALELO", "PARALELO"],
     PickWaiting: [
         "Click anywhere to pick a point. Esc cancels.",
         "Кликните в любом месте, чтобы выбрать точку. Esc — отмена.",
@@ -638,6 +639,15 @@ define_strings! {
         "Pausa entre los puntos de la secuencia, 1 - 60000 ms",
         "Pausa entre os pontos da sequência, 1 - 60000 ms"
     ],
+    RowRoundInterval: ["Round interval", "Интервал раунда", "Rundenintervall", "Intervalle du cycle", "Intervalo de ronda", "Intervalo da rodada"],
+    HintRoundInterval: [
+        "Pause after a full round, 1 - 60000 ms",
+        "Пауза после полного раунда, 1 - 60000 мс",
+        "Pause nach einer vollständigen Runde, 1 - 60000 ms",
+        "Pause après un cycle complet, 1 - 60000 ms",
+        "Pausa tras una ronda completa, 1 - 60000 ms",
+        "Pausa após uma rodada completa, 1 - 60000 ms"
+    ],
     RowPoints: ["Points", "Точки", "Punkte", "Points", "Puntos", "Pontos"],
     HintPoints: [
         "Clicks move through these points in order; at least two are required",
@@ -646,6 +656,14 @@ define_strings! {
         "Les clics parcourent ces points dans l'ordre ; il en faut au moins deux",
         "Los clics recorren estos puntos en orden; se necesitan al menos dos",
         "Os cliques percorrem estes pontos em ordem; são necessários pelo menos dois"
+    ],
+    HintParallelPoints: [
+        "Every point is clicked once per round; at least two are required",
+        "Каждая точка кликается раз за раунд; нужно минимум две",
+        "Jeder Punkt wird einmal pro Runde geklickt; mindestens zwei nötig",
+        "Chaque point est cliqué une fois par cycle ; il en faut au moins deux",
+        "Cada punto se pulsa una vez por ronda; se necesitan al menos dos",
+        "Cada ponto é clicado uma vez por rodada; são necessários pelo menos dois"
     ],
     AddPoint: ["ADD POINT", "ДОБАВИТЬ ТОЧКУ", "PUNKT HINZUFÜGEN", "AJOUTER UN POINT", "AÑADIR PUNTO", "ADICIONAR PONTO"],
     RemovePoint: ["Remove point", "Удалить точку", "Punkt entfernen", "Supprimer le point", "Eliminar punto", "Remover ponto"],
@@ -681,6 +699,14 @@ define_strings! {
         "En modo secuencia, el intervalo de puntos define la velocidad.",
         "No modo sequência, o intervalo dos pontos define a velocidade."
     ],
+    ParallelSpeedHint: [
+        "Parallel mode clicks every point once per round; the interval is the pause between rounds.",
+        "Режим «Параллельно» кликает по каждой точке раз за раунд; интервал — пауза между раундами.",
+        "Der Parallelmodus klickt jeden Punkt einmal pro Runde; das Intervall ist die Pause zwischen den Runden.",
+        "Le mode parallèle clique chaque point une fois par cycle ; l'intervalle est la pause entre les cycles.",
+        "El modo paralelo pulsa cada punto una vez por ronda; el intervalo es la pausa entre rondas.",
+        "O modo paralelo clica cada ponto uma vez por rodada; o intervalo é a pausa entre rodadas."
+    ],
     HeroSequenceClicks: [
         "Sequence of {} points.",
         "Последовательность из {} точек.",
@@ -688,6 +714,14 @@ define_strings! {
         "Séquence de {} points.",
         "Secuencia de {} puntos.",
         "Sequência de {} pontos."
+    ],
+    HeroParallelClicks: [
+        "Parallel round across {} points.",
+        "Параллельный раунд по {} точкам.",
+        "Parallele Runde über {} Punkte.",
+        "Cycle parallèle sur {} points.",
+        "Ronda paralela por {} puntos.",
+        "Rodada paralela em {} pontos."
     ],
     RowMinimizeTray: ["Close to tray", "Закрывать в трей", "Schließen in den Infobereich", "Fermer dans la zone de notification", "Cerrar a la bandeja", "Fechar para a bandeja"],
     HintMinimizeTray: [

@@ -1161,6 +1161,11 @@ impl GuiApp {
                     Key::HeroSequenceClicks,
                     &[self.settings.point_count().to_string()],
                 )
+            } else if self.settings.mode == ClickMode::Parallel {
+                self.fill(
+                    Key::HeroParallelClicks,
+                    &[self.settings.point_count().to_string()],
+                )
             } else if self.settings.target.is_some() {
                 self.t(Key::HeroTargetClicks).to_string()
             } else {
@@ -1331,11 +1336,16 @@ impl GuiApp {
         let mut draft = self.settings;
         let mut changed = false;
 
-        if draft.mode == ClickMode::Sequence {
+        if matches!(draft.mode, ClickMode::Sequence | ClickMode::Parallel) {
+            let hint = if draft.mode == ClickMode::Parallel {
+                Key::ParallelSpeedHint
+            } else {
+                Key::SequenceSpeedHint
+            };
             ui.add_space(2.0);
             ui.add(
                 egui::Label::new(
-                    RichText::new(self.t(Key::SequenceSpeedHint))
+                    RichText::new(self.t(hint))
                         .font(theme::sans(10.0))
                         .color(theme::dim()),
                 )
@@ -1435,6 +1445,7 @@ impl GuiApp {
 
         let period_ms = match draft.mode {
             ClickMode::Sequence => draft.point_interval_ms,
+            ClickMode::Parallel => draft.point_interval_ms / draft.point_count().max(1) as f64,
             ClickMode::Cursor | ClickMode::Point => 1000.0 / draft.cps.max(0.2),
         };
         let effective_hold = draft.hold_ms.min((period_ms - 0.2).max(0.1));
@@ -1475,25 +1486,35 @@ impl GuiApp {
         let mut remove_point = None;
 
         let mut mode = draft.mode;
-        let mode_changed =
-            compact_choice_row(ui, self.t(Key::RowTarget), self.t(Key::HintTarget), |ui| {
-                widgets::segmented(
-                    ui,
-                    "click_mode",
-                    &mut mode,
-                    &[
-                        (ClickMode::Cursor, self.t(Key::TargetCursor)),
-                        (ClickMode::Point, self.t(Key::TargetPoint)),
-                        (ClickMode::Sequence, self.t(Key::TargetSequence)),
-                    ],
-                )
-            });
+        let mut mode_changed = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let _ = row_label(ui, self.t(Key::RowTarget), self.t(Key::HintTarget), 47.0);
+
+            ui.allocate_ui_with_layout(
+                Vec2::new(ui.available_width(), 47.0),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    mode_changed = widgets::segmented_grid2(
+                        ui,
+                        "click_mode",
+                        &mut mode,
+                        &[
+                            (ClickMode::Cursor, self.t(Key::TargetCursor)),
+                            (ClickMode::Point, self.t(Key::TargetPoint)),
+                            (ClickMode::Sequence, self.t(Key::TargetSequence)),
+                            (ClickMode::Parallel, self.t(Key::TargetParallel)),
+                        ],
+                    );
+                },
+            );
+        });
         if mode_changed {
             match mode {
                 ClickMode::Point if draft.target.is_none() => {
                     draft.target = crate::backend::cursor_position().ok();
                 }
-                ClickMode::Sequence if draft.point_count() == 0 => {
+                ClickMode::Sequence | ClickMode::Parallel if draft.point_count() == 0 => {
                     // Leave the list empty: the user adds points with the
                     // eyedropper, and readiness asks for two before starting.
                 }
@@ -1523,12 +1544,17 @@ impl GuiApp {
             changed = true;
         }
 
-        if draft.mode == ClickMode::Sequence {
+        if matches!(draft.mode, ClickMode::Sequence | ClickMode::Parallel) {
+            let (interval_row, interval_hint) = if draft.mode == ClickMode::Parallel {
+                (Key::RowRoundInterval, Key::HintRoundInterval)
+            } else {
+                (Key::RowInterval, Key::HintInterval)
+            };
             theme::rule(ui);
             changed |= compact_slider_row(
                 ui,
-                self.t(Key::RowInterval),
-                self.t(Key::HintInterval),
+                self.t(interval_row),
+                self.t(interval_hint),
                 &mut draft.point_interval_ms,
                 SliderSpec {
                     range: 1.0..=MAX_POINT_INTERVAL_MS as f64,
@@ -1540,9 +1566,14 @@ impl GuiApp {
             );
 
             theme::rule(ui);
+            let points_hint = if draft.mode == ClickMode::Parallel {
+                Key::HintParallelPoints
+            } else {
+                Key::HintPoints
+            };
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                let _ = row_label(ui, self.t(Key::RowPoints), self.t(Key::HintPoints), 22.0);
+                let _ = row_label(ui, self.t(Key::RowPoints), self.t(points_hint), 22.0);
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let enabled = draft.point_count() < MAX_POINTS;

@@ -19,11 +19,6 @@ fn main() {
         windows_console::attach_for_cli();
     }
 
-    // Stop a daemon left behind by the pre-rename `autoclicker` binary. The
-    // new socket/pipe lives in a separate namespace, so without this both
-    // daemons could press the mouse at the same time.
-    ipc::quit_legacy_daemon();
-
     #[cfg(feature = "gui")]
     if gui_launch {
         run_gui(start_hidden);

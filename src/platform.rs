@@ -62,21 +62,6 @@ fn instance_dir() -> PathBuf {
     local_app_dir("V-AutoClicker")
 }
 
-/// Runtime directories used by releases before the rename. They are only used
-/// to shut down daemons that may still be running.
-#[cfg(unix)]
-fn legacy_instance_dirs() -> [PathBuf; 2] {
-    [runtime_dir("savv-autoclicker"), runtime_dir("autoclicker")]
-}
-
-#[cfg(windows)]
-fn legacy_instance_dirs() -> [PathBuf; 2] {
-    [
-        local_app_dir("SAVV-AutoClicker"),
-        local_app_dir("autoclicker"),
-    ]
-}
-
 pub fn ensure_instance_dir() -> io::Result<PathBuf> {
     let dir = instance_dir();
 
@@ -114,11 +99,6 @@ pub fn socket_path() -> io::Result<PathBuf> {
     Ok(ensure_instance_dir()?.join("daemon.sock"))
 }
 
-#[cfg(unix)]
-pub fn legacy_socket_paths() -> [PathBuf; 2] {
-    legacy_instance_dirs().map(|dir| dir.join("daemon.sock"))
-}
-
 #[cfg(windows)]
 fn pipe_name_for(prefix: &str, dir: &std::path::Path) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -134,15 +114,6 @@ fn pipe_name_for(prefix: &str, dir: &std::path::Path) -> String {
 #[cfg(windows)]
 pub fn pipe_name() -> String {
     pipe_name_for("v-autoclicker", &instance_dir())
-}
-
-#[cfg(windows)]
-pub fn legacy_pipe_names() -> [String; 2] {
-    let [renamed, original] = legacy_instance_dirs();
-    [
-        pipe_name_for("savv-autoclicker", &renamed),
-        pipe_name_for("autoclicker", &original),
-    ]
 }
 
 /// Whether the current process runs with administrator privileges. UIPI keeps
@@ -290,8 +261,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pipe_names_keep_their_fnv_format() {
-        // The names are part of the IPC contract: changing the hash would
+    fn pipe_name_keeps_its_fnv_format() {
+        // The name is part of the IPC contract: changing the hash would
         // silently stop the build from reaching a running daemon.
         assert_eq!(
             pipe_name_for(
@@ -299,20 +270,6 @@ mod tests {
                 std::path::Path::new(r"C:\Users\test\AppData\Local\V-AutoClicker"),
             ),
             "v-autoclicker-101266c0d98dadcd"
-        );
-        assert_eq!(
-            pipe_name_for(
-                "savv-autoclicker",
-                std::path::Path::new(r"C:\Users\test\AppData\Local\SAVV-AutoClicker"),
-            ),
-            "savv-autoclicker-2816b64b38847ab3"
-        );
-        assert_eq!(
-            pipe_name_for(
-                "autoclicker",
-                std::path::Path::new(r"C:\Users\test\AppData\Local\autoclicker"),
-            ),
-            "autoclicker-abd1daf7a1dfaf36"
         );
     }
 }

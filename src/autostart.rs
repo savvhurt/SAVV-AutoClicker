@@ -46,7 +46,6 @@ pub fn set_enabled(enabled: bool, _start_hidden: bool) -> Result<()> {
     if enabled {
         install_menu_entry(&executable)?;
         install_icon()?;
-        remove_legacy_entries();
 
         let path = autostart_path()?;
         if let Some(parent) = path.parent() {
@@ -70,7 +69,6 @@ pub fn set_enabled(enabled: bool, _start_hidden: bool) -> Result<()> {
         );
         write_atomic(&path, entry.as_bytes())
     } else {
-        remove_legacy_entries();
         match autostart_path() {
             Ok(path) => match fs::remove_file(&path) {
                 Ok(()) => Ok(()),
@@ -128,26 +126,6 @@ fn install_icon() -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     write_atomic(&path, ICON)
-}
-
-#[cfg(target_os = "linux")]
-fn remove_legacy_entries() {
-    const LEGACY: [&str; 2] = ["savv-autoclicker", "autoclicker"];
-
-    if let Ok(config) = config_home() {
-        for name in LEGACY {
-            let _ = fs::remove_file(config.join("autostart").join(format!("{name}.desktop")));
-        }
-    }
-    if let Ok(data) = data_home() {
-        for name in LEGACY {
-            let _ = fs::remove_file(data.join("applications").join(format!("{name}.desktop")));
-            let _ = fs::remove_file(
-                data.join("icons/hicolor/256x256/apps")
-                    .join(format!("{name}.png")),
-            );
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -239,7 +217,6 @@ mod windows_registry {
 
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const VALUE_NAME: &str = "V-AutoClicker";
-    const LEGACY_VALUE_NAMES: [&str; 2] = ["SAVV-AutoClicker", "Autoclicker"];
 
     fn wide(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -316,19 +293,6 @@ mod windows_registry {
                         .ok()
                         .with_context(|| "failed to remove the Windows autostart registry value")?;
                 }
-            }
-        }
-
-        // Drop pre-rename values if an old build created them.
-        if let Some(key) = open_key(KEY_SET_VALUE)? {
-            for value in LEGACY_VALUE_NAMES {
-                let name = wide(value);
-                unsafe {
-                    let _ = RegDeleteValueW(key, PCWSTR(name.as_ptr()));
-                }
-            }
-            unsafe {
-                let _ = RegCloseKey(key);
             }
         }
 

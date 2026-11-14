@@ -250,30 +250,13 @@ pub fn load() -> Loaded {
         }
     };
 
-    let (read_path, migrated, text) = match fs::read_to_string(&path) {
-        Ok(text) => (path.clone(), false, text),
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let Some(legacy) = legacy_config_paths()
-                .into_iter()
-                .find(|legacy| legacy.exists())
-            else {
-                return Loaded {
-                    config: fallback(),
-                    warning: None,
-                };
+            return Loaded {
+                config: fallback(),
+                warning: None,
             };
-            match fs::read_to_string(&legacy) {
-                Ok(text) => (legacy, true, text),
-                Err(error) => {
-                    return Loaded {
-                        config: fallback(),
-                        warning: Some(format!(
-                            "Could not read {}: {error}. Using defaults.",
-                            legacy.display()
-                        )),
-                    };
-                }
-            }
         }
         Err(error) => {
             return Loaded {
@@ -293,16 +276,13 @@ pub fn load() -> Loaded {
                 config: fallback(),
                 warning: Some(format!(
                     "Could not parse {}: {error:#}. Using defaults.",
-                    read_path.display()
+                    path.display()
                 )),
             };
         }
     };
 
     let mut warnings = Vec::new();
-    if migrated {
-        warnings.push(format!("Imported settings from {}.", read_path.display()));
-    }
 
     let settings = match parse_settings(&persisted) {
         Ok(settings) => settings,
@@ -363,12 +343,6 @@ pub fn load() -> Loaded {
         minimize_to_tray: persisted.minimize_to_tray,
     };
 
-    // Write the imported settings to the new location once, so the next
-    // launch reads `v-autoclicker/gui.toml` directly.
-    if migrated && let Err(error) = save(&config) {
-        warnings.push(format!("Could not save imported settings: {error:#}"));
-    }
-
     Loaded {
         config,
         warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
@@ -418,16 +392,6 @@ pub fn config_path() -> Result<PathBuf> {
     let directory = config_directory()
         .ok_or_else(|| anyhow::anyhow!("the user configuration directory is not set"))?;
     Ok(directory.join("v-autoclicker").join("gui.toml"))
-}
-
-fn legacy_config_paths() -> Vec<PathBuf> {
-    let Some(directory) = config_directory() else {
-        return Vec::new();
-    };
-    ["savv-autoclicker", "autoclicker"]
-        .into_iter()
-        .map(|name| directory.join(name).join("gui.toml"))
-        .collect()
 }
 
 #[cfg(test)]
