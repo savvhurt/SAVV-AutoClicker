@@ -8,6 +8,9 @@
   <a href="https://github.com/savvhurt/V-AutoClicker/stargazers">
     <img src="https://img.shields.io/github/stars/savvhurt/V-AutoClicker?style=for-the-badge&color=yellow" alt="Stars">
   </a>
+  <a href="https://github.com/savvhurt/V-AutoClicker/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/savvhurt/V-AutoClicker?style=for-the-badge&color=orange&label=LICENSE" alt="License">
+  </a>
 </p>
 
 <div align="center">
