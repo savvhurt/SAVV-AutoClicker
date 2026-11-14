@@ -17,16 +17,28 @@ pub enum Theme {
     Ocean,
     Forest,
     Contrast,
+    Rose,
+    Lavender,
+    Midnight,
+    Nord,
+    Coffee,
+    Matcha,
 }
 
 impl Theme {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 12] = [
         Self::Paper,
         Self::Graphite,
         Self::Sand,
         Self::Ocean,
         Self::Forest,
         Self::Contrast,
+        Self::Rose,
+        Self::Lavender,
+        Self::Midnight,
+        Self::Nord,
+        Self::Coffee,
+        Self::Matcha,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -37,6 +49,12 @@ impl Theme {
             Self::Ocean => "ocean",
             Self::Forest => "forest",
             Self::Contrast => "contrast",
+            Self::Rose => "rose",
+            Self::Lavender => "lavender",
+            Self::Midnight => "midnight",
+            Self::Nord => "nord",
+            Self::Coffee => "coffee",
+            Self::Matcha => "matcha",
         }
     }
 
@@ -50,6 +68,12 @@ impl Theme {
             "ocean" | "океан" => Some(Self::Ocean),
             "forest" | "лес" => Some(Self::Forest),
             "contrast" | "контраст" => Some(Self::Contrast),
+            "rose" | "роза" => Some(Self::Rose),
+            "lavender" | "лаванда" => Some(Self::Lavender),
+            "midnight" | "полночь" => Some(Self::Midnight),
+            "nord" | "норд" => Some(Self::Nord),
+            "coffee" | "кофе" => Some(Self::Coffee),
+            "matcha" | "матча" => Some(Self::Matcha),
             _ => None,
         }
     }
@@ -62,6 +86,12 @@ impl Theme {
             Self::Ocean => 3,
             Self::Forest => 4,
             Self::Contrast => 5,
+            Self::Rose => 6,
+            Self::Lavender => 7,
+            Self::Midnight => 8,
+            Self::Nord => 9,
+            Self::Coffee => 10,
+            Self::Matcha => 11,
         }
     }
 
@@ -70,7 +100,15 @@ impl Theme {
     }
 
     pub fn is_dark(self) -> bool {
-        matches!(self, Self::Graphite | Self::Ocean | Self::Forest)
+        matches!(
+            self,
+            Self::Graphite
+                | Self::Ocean
+                | Self::Forest
+                | Self::Midnight
+                | Self::Nord
+                | Self::Matcha
+        )
     }
 }
 
@@ -215,7 +253,10 @@ pub fn load() -> Loaded {
     let (read_path, migrated, text) = match fs::read_to_string(&path) {
         Ok(text) => (path.clone(), false, text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let Some(legacy) = legacy_config_path().filter(|legacy| legacy.exists()) else {
+            let Some(legacy) = legacy_config_paths()
+                .into_iter()
+                .find(|legacy| legacy.exists())
+            else {
                 return Loaded {
                     config: fallback(),
                     warning: None,
@@ -313,15 +354,23 @@ pub fn load() -> Loaded {
         }
     };
 
+    let config = Config {
+        settings,
+        hotkey,
+        hold_hotkey,
+        theme,
+        language,
+        minimize_to_tray: persisted.minimize_to_tray,
+    };
+
+    // Write the imported settings to the new location once, so the next
+    // launch reads `v-autoclicker/gui.toml` directly.
+    if migrated && let Err(error) = save(&config) {
+        warnings.push(format!("Could not save imported settings: {error:#}"));
+    }
+
     Loaded {
-        config: Config {
-            settings,
-            hotkey,
-            hold_hotkey,
-            theme,
-            language,
-            minimize_to_tray: persisted.minimize_to_tray,
-        },
+        config,
         warning: (!warnings.is_empty()).then(|| warnings.join("\n")),
     }
 }
@@ -368,11 +417,17 @@ fn parse_settings(persisted: &PersistedSettings) -> Result<Settings> {
 pub fn config_path() -> Result<PathBuf> {
     let directory = config_directory()
         .ok_or_else(|| anyhow::anyhow!("the user configuration directory is not set"))?;
-    Ok(directory.join("savv-autoclicker").join("gui.toml"))
+    Ok(directory.join("v-autoclicker").join("gui.toml"))
 }
 
-fn legacy_config_path() -> Option<PathBuf> {
-    config_directory().map(|directory| directory.join("autoclicker").join("gui.toml"))
+fn legacy_config_paths() -> Vec<PathBuf> {
+    let Some(directory) = config_directory() else {
+        return Vec::new();
+    };
+    ["savv-autoclicker", "autoclicker"]
+        .into_iter()
+        .map(|name| directory.join(name).join("gui.toml"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -544,9 +599,34 @@ mod tests {
         assert_eq!(Theme::parse("Тёмная"), Some(Theme::Graphite));
         assert_eq!(Theme::parse("LIGHT"), Some(Theme::Paper));
         assert_eq!(Theme::parse("dark"), Some(Theme::Graphite));
+        assert_eq!(Theme::parse("Роза"), Some(Theme::Rose));
+        assert_eq!(Theme::parse("ЛАВАНДА"), Some(Theme::Lavender));
+        assert_eq!(Theme::parse("Midnight"), Some(Theme::Midnight));
+        assert_eq!(Theme::parse("норд"), Some(Theme::Nord));
+        assert_eq!(Theme::parse("Coffee"), Some(Theme::Coffee));
+        assert_eq!(Theme::parse("матча"), Some(Theme::Matcha));
         assert_eq!(Theme::parse("neon"), None);
-        assert_eq!(Theme::Paper.as_str(), "paper");
-        assert_eq!(Theme::Graphite.as_str(), "graphite");
-        assert_eq!(Theme::from_index(Theme::Contrast.index()), Theme::Contrast);
+
+        assert_eq!(Theme::ALL.len(), 12);
+        for theme in Theme::ALL {
+            assert_eq!(Theme::parse(theme.as_str()), Some(theme));
+            assert_eq!(Theme::from_index(theme.index()), theme);
+        }
+    }
+
+    #[test]
+    fn dark_themes_are_flagged() {
+        for theme in Theme::ALL {
+            let expected = matches!(
+                theme,
+                Theme::Graphite
+                    | Theme::Ocean
+                    | Theme::Forest
+                    | Theme::Midnight
+                    | Theme::Nord
+                    | Theme::Matcha
+            );
+            assert_eq!(theme.is_dark(), expected, "{theme:?}");
+        }
     }
 }

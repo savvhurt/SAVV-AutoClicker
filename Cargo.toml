@@ -1,6 +1,6 @@
 [package]
-name = "savv-autoclicker"
-version = "0.4.1"
+name = "v-autoclicker"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.85"
 build = "build.rs"
@@ -62,11 +62,11 @@ windows = { version = "0.62.2", features = [
 winresource = "0.1"
 
 [[bin]]
-name = "savv-autoclicker"
+name = "v-autoclicker"
 path = "src/main.rs"
 
 [lib]
-name = "savv_autoclicker"
+name = "v_autoclicker"
 path = "src/lib.rs"
 
 [profile.release]

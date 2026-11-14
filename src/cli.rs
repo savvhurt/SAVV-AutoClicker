@@ -5,7 +5,7 @@ use crate::state::{Button, ClickMode, Point, Settings};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "savv-autoclicker",
+    name = "v-autoclicker",
     version,
     about = "Fast virtual-mouse autoclicker for Linux and Windows",
     long_about = None

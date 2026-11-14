@@ -6,8 +6,8 @@
 use anyhow::Result;
 use clap::Parser;
 
-use savv_autoclicker::cli::{Cli, Command};
-use savv_autoclicker::{daemon, ipc};
+use v_autoclicker::cli::{Cli, Command};
+use v_autoclicker::{daemon, ipc};
 
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
@@ -34,14 +34,14 @@ fn main() {
     let _ = (gui_launch, start_hidden);
 
     if let Err(error) = run() {
-        eprintln!("savv-autoclicker: error: {error:#}");
+        eprintln!("v-autoclicker: error: {error:#}");
         std::process::exit(1);
     }
 }
 
 #[cfg(feature = "gui")]
 fn run_gui(start_hidden: bool) {
-    if let Err(error) = savv_autoclicker::gui::run(start_hidden) {
+    if let Err(error) = v_autoclicker::gui::run(start_hidden) {
         report_error(&format!("{error:#}"));
         std::process::exit(1);
     }
@@ -53,7 +53,7 @@ fn report_error(message: &str) {
     use std::io::Write;
 
     if let Some(appdata) = std::env::var_os("APPDATA") {
-        let directory = std::path::PathBuf::from(appdata).join("SAVV-AutoClicker");
+        let directory = std::path::PathBuf::from(appdata).join("V-AutoClicker");
         if std::fs::create_dir_all(&directory).is_ok() {
             if let Ok(mut file) = std::fs::File::create(directory.join("gui-error.log")) {
                 let _ = writeln!(file, "{message}");
@@ -65,7 +65,7 @@ fn report_error(message: &str) {
     use windows::core::HSTRING;
 
     let text = HSTRING::from(message);
-    let title = HSTRING::from("SAVV-AutoClicker");
+    let title = HSTRING::from("V-AutoClicker");
     unsafe {
         MessageBoxW(None, &text, &title, MB_OK | MB_ICONERROR);
     }
@@ -74,7 +74,7 @@ fn report_error(message: &str) {
 #[cfg(feature = "gui")]
 #[cfg(not(windows))]
 fn report_error(message: &str) {
-    eprintln!("savv-autoclicker: gui error: {message}");
+    eprintln!("v-autoclicker: gui error: {message}");
 }
 
 fn run() -> Result<()> {
@@ -89,7 +89,7 @@ fn run() -> Result<()> {
             let response = ipc::send_or_spawn("TOGGLE")?;
             ipc::ensure_ok(&response)?;
             println!(
-                "savv-autoclicker: {}",
+                "v-autoclicker: {}",
                 if response.contains("enabled=true") {
                     "on"
                 } else {
@@ -103,7 +103,7 @@ fn run() -> Result<()> {
             let command = args.click.to_wire_command()?;
             let response = ipc::send_or_spawn(&command)?;
             ipc::ensure_ok(&response)?;
-            println!("savv-autoclicker: on");
+            println!("v-autoclicker: on");
             Ok(())
         }
 
@@ -111,9 +111,9 @@ fn run() -> Result<()> {
             match ipc::send("OFF") {
                 Ok(response) => {
                     ipc::ensure_ok(&response)?;
-                    println!("savv-autoclicker: off");
+                    println!("v-autoclicker: off");
                 }
-                Err(_) => println!("savv-autoclicker: not running"),
+                Err(_) => println!("v-autoclicker: not running"),
             }
             Ok(())
         }
@@ -125,7 +125,7 @@ fn run() -> Result<()> {
                     let body = response.strip_prefix("OK\n").unwrap_or(&response);
                     print!("{body}");
                 }
-                Err(_) => println!("savv-autoclicker: not running"),
+                Err(_) => println!("v-autoclicker: not running"),
             }
             Ok(())
         }
@@ -134,9 +134,9 @@ fn run() -> Result<()> {
             match ipc::send("QUIT") {
                 Ok(response) => {
                     ipc::ensure_ok(&response)?;
-                    println!("savv-autoclicker: stopped");
+                    println!("v-autoclicker: stopped");
                 }
-                Err(_) => println!("savv-autoclicker: not running"),
+                Err(_) => println!("v-autoclicker: not running"),
             }
             Ok(())
         }
@@ -159,7 +159,7 @@ mod windows_console {
     use windows::core::HSTRING;
 
     pub fn attach_for_cli() {
-        // Keep explicit redirection (`savv-autoclicker status > file.txt`, pipes,
+        // Keep explicit redirection (`v-autoclicker status > file.txt`, pipes,
         // etc.) intact. Only fill in handles the process did not inherit.
         let stdin_valid = handle_is_valid(STD_INPUT_HANDLE);
         let stdout_valid = handle_is_valid(STD_OUTPUT_HANDLE);

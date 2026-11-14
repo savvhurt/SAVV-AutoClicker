@@ -41,8 +41,8 @@ use windows::core::PCWSTR;
 
 use crate::i18n::{Key, Lang};
 
-const WINDOW_TITLE: &str = "SAVV-AutoClicker";
-const TRAY_CLASS: &str = "SAVV-AutoClickerTray";
+const WINDOW_TITLE: &str = "V-AutoClicker";
+const TRAY_CLASS: &str = "V-AutoClickerTray";
 const TRAY_ID: u32 = 1;
 const TRAY_CALLBACK: u32 = WM_APP + 1;
 const CLOSE_SUBCLASS_ID: usize = 1;
@@ -91,7 +91,7 @@ impl Tray {
 
         let (sender, receiver) = mpsc::channel();
         let spawned = thread::Builder::new()
-            .name("savv-autoclicker-tray".to_string())
+            .name("v-autoclicker-tray".to_string())
             .spawn(move || {
                 if let Err(error) = run(sender, id) {
                     log_error(format!("tray thread: {error:#}"));
@@ -467,7 +467,7 @@ fn log_error(message: impl AsRef<str>) {
     let Some(appdata) = std::env::var_os("APPDATA") else {
         return;
     };
-    let directory = PathBuf::from(appdata).join("SAVV-AutoClicker");
+    let directory = PathBuf::from(appdata).join("V-AutoClicker");
     if std::fs::create_dir_all(&directory).is_err() {
         return;
     }

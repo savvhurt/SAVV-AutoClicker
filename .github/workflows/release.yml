@@ -52,16 +52,16 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/savv-autoclicker.exe dist/
+          Copy-Item target/release/v-autoclicker.exe dist/
           Copy-Item README.md dist/
           Copy-Item assets/fonts/LICENSE.txt dist/FONT-LICENSE.txt
-          Compress-Archive -Path dist/* -DestinationPath savv-autoclicker-windows-x86_64.zip
+          Compress-Archive -Path dist/* -DestinationPath v-autoclicker-windows-x86_64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: savv-autoclicker-windows-x86_64
-          path: savv-autoclicker-windows-x86_64.zip
+          name: v-autoclicker-windows-x86_64
+          path: v-autoclicker-windows-x86_64.zip
           if-no-files-found: error
 
   linux:
@@ -96,18 +96,18 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p dist/savv-autoclicker-linux-x86_64
-          cp target/release/savv-autoclicker dist/savv-autoclicker-linux-x86_64/
-          cp README.md dist/savv-autoclicker-linux-x86_64/
-          cp assets/fonts/LICENSE.txt dist/savv-autoclicker-linux-x86_64/FONT-LICENSE.txt
-          chmod +x dist/savv-autoclicker-linux-x86_64/savv-autoclicker
-          tar -C dist -czf savv-autoclicker-linux-x86_64.tar.gz savv-autoclicker-linux-x86_64
+          mkdir -p dist/v-autoclicker-linux-x86_64
+          cp target/release/v-autoclicker dist/v-autoclicker-linux-x86_64/
+          cp README.md dist/v-autoclicker-linux-x86_64/
+          cp assets/fonts/LICENSE.txt dist/v-autoclicker-linux-x86_64/FONT-LICENSE.txt
+          chmod +x dist/v-autoclicker-linux-x86_64/v-autoclicker
+          tar -C dist -czf v-autoclicker-linux-x86_64.tar.gz v-autoclicker-linux-x86_64
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: savv-autoclicker-linux-x86_64
-          path: savv-autoclicker-linux-x86_64.tar.gz
+          name: v-autoclicker-linux-x86_64
+          path: v-autoclicker-linux-x86_64.tar.gz
           if-no-files-found: error
 
   publish:
@@ -144,7 +144,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          name: SAVV-AutoClicker ${{ env.TAG }}
+          name: V-AutoClicker ${{ env.TAG }}
           body_path: .github/release-notes/${{ env.TAG }}.md
           files: dist/*
           fail_on_unmatched_files: true

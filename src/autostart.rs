@@ -16,13 +16,13 @@ use anyhow::Context;
 pub const SUPPORTED: bool = cfg!(any(target_os = "linux", windows));
 
 #[cfg(target_os = "linux")]
-const ICON: &[u8] = include_bytes!("../assets/icon/savv-autoclicker-256.png");
+const ICON: &[u8] = include_bytes!("../assets/icon/v-autoclicker-256.png");
 
 #[cfg(target_os = "linux")]
-const NAME: &str = "SAVV-AutoClicker";
+const NAME: &str = "V-AutoClicker";
 
 #[cfg(target_os = "linux")]
-const ICON_NAME: &str = "savv-autoclicker";
+const ICON_NAME: &str = "v-autoclicker";
 
 #[cfg(target_os = "linux")]
 pub fn is_enabled() -> bool {
@@ -132,14 +132,21 @@ fn install_icon() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn remove_legacy_entries() {
-    if let Ok(path) = autostart_path() {
-        if let Some(directory) = path.parent() {
-            let _ = fs::remove_file(directory.join("autoclicker.desktop"));
+    const LEGACY: [&str; 2] = ["savv-autoclicker", "autoclicker"];
+
+    if let Ok(config) = config_home() {
+        for name in LEGACY {
+            let _ = fs::remove_file(config.join("autostart").join(format!("{name}.desktop")));
         }
     }
-    if let Ok(home) = data_home() {
-        let _ = fs::remove_file(home.join("applications/autoclicker.desktop"));
-        let _ = fs::remove_file(home.join("icons/hicolor/256x256/apps/autoclicker.png"));
+    if let Ok(data) = data_home() {
+        for name in LEGACY {
+            let _ = fs::remove_file(data.join("applications").join(format!("{name}.desktop")));
+            let _ = fs::remove_file(
+                data.join("icons/hicolor/256x256/apps")
+                    .join(format!("{name}.png")),
+            );
+        }
     }
 }
 
@@ -231,8 +238,8 @@ mod windows_registry {
     use windows::core::PCWSTR;
 
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    const VALUE_NAME: &str = "SAVV-AutoClicker";
-    const LEGACY_VALUE_NAME: &str = "Autoclicker";
+    const VALUE_NAME: &str = "V-AutoClicker";
+    const LEGACY_VALUE_NAMES: [&str; 2] = ["SAVV-AutoClicker", "Autoclicker"];
 
     fn wide(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -312,11 +319,15 @@ mod windows_registry {
             }
         }
 
-        // Drop the pre-rename value if an old build created one.
+        // Drop pre-rename values if an old build created them.
         if let Some(key) = open_key(KEY_SET_VALUE)? {
-            let name = wide(LEGACY_VALUE_NAME);
+            for value in LEGACY_VALUE_NAMES {
+                let name = wide(value);
+                unsafe {
+                    let _ = RegDeleteValueW(key, PCWSTR(name.as_ptr()));
+                }
+            }
             unsafe {
-                let _ = RegDeleteValueW(key, PCWSTR(name.as_ptr()));
                 let _ = RegCloseKey(key);
             }
         }

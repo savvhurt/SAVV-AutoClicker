@@ -70,7 +70,7 @@ impl LinuxBackend {
             .context(
                 "cannot open /dev/uinput; make it writable for your user or install a udev rule",
             )?
-            .name("savv-autoclicker virtual mouse")
+            .name("v-autoclicker virtual mouse")
             .input_id(InputId::new(BusType::BUS_VIRTUAL, 0x1, 0x1, 1))
             .with_keys(&keys)?
             .with_relative_axes(&axes)?

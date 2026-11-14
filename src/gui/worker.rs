@@ -90,7 +90,7 @@ impl Worker {
         let thread_stop = stop.clone();
 
         let handle = thread::Builder::new()
-            .name("savv-autoclicker-gui-ipc".to_string())
+            .name("v-autoclicker-gui-ipc".to_string())
             .spawn(move || {
                 run(
                     command_rx,

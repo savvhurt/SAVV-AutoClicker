@@ -33,45 +33,48 @@ pub fn timer_resolution() -> TimerResolution {
 }
 
 #[cfg(unix)]
-fn instance_dir() -> PathBuf {
+fn runtime_dir(name: &str) -> PathBuf {
     if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
         if !dir.is_empty() {
-            return PathBuf::from(dir).join("savv-autoclicker");
+            return PathBuf::from(dir).join(name);
         }
     }
 
-    env::temp_dir().join(format!("savv-autoclicker-{}", unsafe { libc::getuid() }))
+    env::temp_dir().join(format!("{name}-{}", unsafe { libc::getuid() }))
 }
 
-#[cfg(windows)]
-fn instance_dir() -> PathBuf {
-    env::var_os("LOCALAPPDATA")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir)
-        .join("SAVV-AutoClicker")
-}
-
-/// Runtime directory used by `autoclicker` releases before the rename. It is
-/// only used to shut down a daemon that may still be running.
 #[cfg(unix)]
-fn legacy_instance_dir() -> PathBuf {
-    if let Some(dir) = env::var_os("XDG_RUNTIME_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir).join("autoclicker");
-        }
-    }
-
-    env::temp_dir().join(format!("autoclicker-{}", unsafe { libc::getuid() }))
+fn instance_dir() -> PathBuf {
+    runtime_dir("v-autoclicker")
 }
 
 #[cfg(windows)]
-fn legacy_instance_dir() -> PathBuf {
+fn local_app_dir(name: &str) -> PathBuf {
     env::var_os("LOCALAPPDATA")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(env::temp_dir)
-        .join("autoclicker")
+        .join(name)
+}
+
+#[cfg(windows)]
+fn instance_dir() -> PathBuf {
+    local_app_dir("V-AutoClicker")
+}
+
+/// Runtime directories used by releases before the rename. They are only used
+/// to shut down daemons that may still be running.
+#[cfg(unix)]
+fn legacy_instance_dirs() -> [PathBuf; 2] {
+    [runtime_dir("savv-autoclicker"), runtime_dir("autoclicker")]
+}
+
+#[cfg(windows)]
+fn legacy_instance_dirs() -> [PathBuf; 2] {
+    [
+        local_app_dir("SAVV-AutoClicker"),
+        local_app_dir("autoclicker"),
+    ]
 }
 
 pub fn ensure_instance_dir() -> io::Result<PathBuf> {
@@ -112,8 +115,8 @@ pub fn socket_path() -> io::Result<PathBuf> {
 }
 
 #[cfg(unix)]
-pub fn legacy_socket_path() -> PathBuf {
-    legacy_instance_dir().join("daemon.sock")
+pub fn legacy_socket_paths() -> [PathBuf; 2] {
+    legacy_instance_dirs().map(|dir| dir.join("daemon.sock"))
 }
 
 #[cfg(windows)]
@@ -130,12 +133,16 @@ fn pipe_name_for(prefix: &str, dir: &std::path::Path) -> String {
 
 #[cfg(windows)]
 pub fn pipe_name() -> String {
-    pipe_name_for("savv-autoclicker", &instance_dir())
+    pipe_name_for("v-autoclicker", &instance_dir())
 }
 
 #[cfg(windows)]
-pub fn legacy_pipe_name() -> String {
-    pipe_name_for("autoclicker", &legacy_instance_dir())
+pub fn legacy_pipe_names() -> [String; 2] {
+    let [renamed, original] = legacy_instance_dirs();
+    [
+        pipe_name_for("savv-autoclicker", &renamed),
+        pipe_name_for("autoclicker", &original),
+    ]
 }
 
 /// Whether the current process runs with administrator privileges. UIPI keeps
@@ -283,9 +290,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pipe_names_keep_their_legacy_fnv_format() {
+    fn pipe_names_keep_their_fnv_format() {
         // The names are part of the IPC contract: changing the hash would
-        // silently stop the new build from reaching an old daemon.
+        // silently stop the build from reaching a running daemon.
+        assert_eq!(
+            pipe_name_for(
+                "v-autoclicker",
+                std::path::Path::new(r"C:\Users\test\AppData\Local\V-AutoClicker"),
+            ),
+            "v-autoclicker-101266c0d98dadcd"
+        );
         assert_eq!(
             pipe_name_for(
                 "savv-autoclicker",

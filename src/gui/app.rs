@@ -241,7 +241,7 @@ impl GuiApp {
             config.hold_hotkey.clone(),
             config.language,
         )
-        .expect("failed to start the SAVV-AutoClicker GUI IPC worker");
+        .expect("failed to start the V-AutoClicker GUI IPC worker");
         let worker_stop = worker.stop_flag();
         let autostart_enabled = crate::autostart::is_enabled();
 
@@ -458,7 +458,7 @@ impl GuiApp {
         let token = self.start_token.clone();
         let commands = self.commands.clone();
         let spawned = thread::Builder::new()
-            .name("savv-autoclicker-start-guard".to_string())
+            .name("v-autoclicker-start-guard".to_string())
             .spawn(move || {
                 thread::sleep(START_GUARD);
                 if token.load(Ordering::Relaxed) == generation {
@@ -707,6 +707,12 @@ impl GuiApp {
             Theme::Ocean => Key::ThemeOcean,
             Theme::Forest => Key::ThemeForest,
             Theme::Contrast => Key::ThemeContrast,
+            Theme::Rose => Key::ThemeRose,
+            Theme::Lavender => Key::ThemeLavender,
+            Theme::Midnight => Key::ThemeMidnight,
+            Theme::Nord => Key::ThemeNord,
+            Theme::Coffee => Key::ThemeCoffee,
+            Theme::Matcha => Key::ThemeMatcha,
         })
     }
 
@@ -752,7 +758,7 @@ impl GuiApp {
 
         let (sender, receiver) = mpsc::channel();
         let spawned = thread::Builder::new()
-            .name("savv-autoclicker-pipette".to_string())
+            .name("v-autoclicker-pipette".to_string())
             .spawn(move || {
                 let result = crate::backend::capture_point().map_err(|error| format!("{error:#}"));
                 let _ = sender.send(result);
@@ -1079,7 +1085,7 @@ impl GuiApp {
                 .rect_filled(mark, CornerRadius::same(2), theme::accent());
 
             ui.label(
-                RichText::new("SAVV-AutoClicker")
+                RichText::new("V-AutoClicker")
                     .font(theme::sans_semibold(16.0))
                     .color(theme::text()),
             );
@@ -2219,7 +2225,7 @@ impl GuiApp {
     fn toggle_bind(&self) -> String {
         let executable = std::env::current_exe()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|_| "savv-autoclicker".to_string());
+            .unwrap_or_else(|_| "v-autoclicker".to_string());
         let executable = executable.replace('"', "\\\"");
         format!("Mod+Alt+C {{ spawn \"{executable}\" \"toggle\"; }}")
     }
@@ -2425,10 +2431,10 @@ pub fn run(start_hidden: bool) -> Result<(), Box<dyn std::error::Error>> {
     let start_hidden = start_hidden && cfg!(windows) && config::load().config.minimize_to_tray;
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_app_id("savv-autoclicker")
+        .with_app_id("v-autoclicker")
         .with_inner_size(WINDOW_SIZE)
         .with_min_inner_size(MIN_WINDOW_SIZE)
-        .with_title("SAVV-AutoClicker")
+        .with_title("V-AutoClicker")
         .with_visible(!start_hidden);
 
     if let Some(icon) = load_icon() {
@@ -2444,7 +2450,7 @@ pub fn run(start_hidden: bool) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn load_icon() -> Option<egui::IconData> {
-    let bytes = include_bytes!("../../assets/icon/savv-autoclicker-256.png");
+    let bytes = include_bytes!("../../assets/icon/v-autoclicker-256.png");
     let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder.read_info().ok()?;
     let mut buffer = vec![0; reader.output_buffer_size()?];

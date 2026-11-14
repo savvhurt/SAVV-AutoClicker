@@ -9,7 +9,8 @@ use egui::{
 use super::config::Theme;
 
 // Each palette keeps the same signal accent for active clicks while the
-// surrounding paper, graphite, sand, ocean, forest or contrast surface changes.
+// surrounding surface changes: paper, graphite, sand, ocean, forest, contrast,
+// rose, lavender, midnight, nord, coffee or matcha.
 #[derive(Clone, Copy)]
 struct Palette {
     dark: bool,
@@ -116,6 +117,96 @@ const CONTRAST: Palette = Palette {
     accent: Color32::from_rgb(250, 204, 21),
 };
 
+const ROSE: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(250, 240, 241),
+    panel: Color32::from_rgb(253, 247, 247),
+    input: Color32::from_rgb(245, 229, 231),
+    line: Color32::from_rgb(224, 199, 203),
+    line_soft: Color32::from_rgb(239, 221, 224),
+    text: Color32::from_rgb(59, 35, 39),
+    muted: Color32::from_rgb(140, 106, 112),
+    dim: Color32::from_rgb(179, 152, 157),
+    warning: Color32::from_rgb(168, 106, 18),
+    danger: Color32::from_rgb(179, 58, 72),
+    accent: Color32::from_rgb(194, 85, 106),
+};
+
+const LAVENDER: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(243, 240, 250),
+    panel: Color32::from_rgb(250, 248, 253),
+    input: Color32::from_rgb(233, 228, 245),
+    line: Color32::from_rgb(211, 203, 230),
+    line_soft: Color32::from_rgb(228, 222, 241),
+    text: Color32::from_rgb(46, 40, 66),
+    muted: Color32::from_rgb(115, 107, 140),
+    dim: Color32::from_rgb(162, 154, 184),
+    warning: Color32::from_rgb(151, 107, 20),
+    danger: Color32::from_rgb(176, 71, 90),
+    accent: Color32::from_rgb(124, 107, 196),
+};
+
+const MIDNIGHT: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(14, 18, 32),
+    panel: Color32::from_rgb(22, 28, 46),
+    input: Color32::from_rgb(32, 40, 61),
+    line: Color32::from_rgb(49, 59, 85),
+    line_soft: Color32::from_rgb(35, 44, 66),
+    text: Color32::from_rgb(230, 234, 245),
+    muted: Color32::from_rgb(154, 165, 192),
+    dim: Color32::from_rgb(107, 118, 145),
+    warning: Color32::from_rgb(224, 177, 92),
+    danger: Color32::from_rgb(239, 122, 130),
+    accent: Color32::from_rgb(108, 140, 255),
+};
+
+const NORD: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(46, 52, 64),
+    panel: Color32::from_rgb(53, 60, 74),
+    input: Color32::from_rgb(59, 66, 82),
+    line: Color32::from_rgb(76, 86, 106),
+    line_soft: Color32::from_rgb(67, 76, 94),
+    text: Color32::from_rgb(236, 239, 244),
+    muted: Color32::from_rgb(170, 179, 197),
+    dim: Color32::from_rgb(123, 134, 156),
+    warning: Color32::from_rgb(235, 203, 139),
+    danger: Color32::from_rgb(191, 97, 106),
+    accent: Color32::from_rgb(136, 192, 208),
+};
+
+const COFFEE: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(244, 237, 228),
+    panel: Color32::from_rgb(251, 246, 239),
+    input: Color32::from_rgb(237, 225, 211),
+    line: Color32::from_rgb(216, 198, 178),
+    line_soft: Color32::from_rgb(232, 218, 203),
+    text: Color32::from_rgb(58, 44, 32),
+    muted: Color32::from_rgb(133, 111, 92),
+    dim: Color32::from_rgb(176, 154, 133),
+    warning: Color32::from_rgb(169, 107, 24),
+    danger: Color32::from_rgb(180, 71, 47),
+    accent: Color32::from_rgb(140, 90, 60),
+};
+
+const MATCHA: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(19, 26, 20),
+    panel: Color32::from_rgb(27, 36, 28),
+    input: Color32::from_rgb(37, 49, 38),
+    line: Color32::from_rgb(55, 74, 57),
+    line_soft: Color32::from_rgb(39, 53, 42),
+    text: Color32::from_rgb(229, 239, 227),
+    muted: Color32::from_rgb(159, 179, 157),
+    dim: Color32::from_rgb(113, 133, 111),
+    warning: Color32::from_rgb(217, 180, 91),
+    danger: Color32::from_rgb(224, 122, 109),
+    accent: Color32::from_rgb(141, 187, 106),
+};
+
 const SANS_REGULAR: &str = "plex-sans-regular";
 const SANS_MEDIUM: &str = "plex-sans-medium";
 const SANS_SEMIBOLD: &str = "plex-sans-semibold";
@@ -158,6 +249,12 @@ fn palette() -> Palette {
         Theme::Ocean => OCEAN,
         Theme::Forest => FOREST,
         Theme::Contrast => CONTRAST,
+        Theme::Rose => ROSE,
+        Theme::Lavender => LAVENDER,
+        Theme::Midnight => MIDNIGHT,
+        Theme::Nord => NORD,
+        Theme::Coffee => COFFEE,
+        Theme::Matcha => MATCHA,
     }
 }
 

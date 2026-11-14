@@ -1751,29 +1751,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "savv-autoclicker"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "clap",
- "ctrlc",
- "egui",
- "egui-winit",
- "egui_software_backend",
- "evdev",
- "fs2",
- "interprocess",
- "libc",
- "png",
- "serde",
- "sys-locale",
- "toml",
- "windows",
- "winresource",
- "x11rb",
-]
-
-[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2203,6 +2180,29 @@ name = "uuid"
 version = "1.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
+
+[[package]]
+name = "v-autoclicker"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ctrlc",
+ "egui",
+ "egui-winit",
+ "egui_software_backend",
+ "evdev",
+ "fs2",
+ "interprocess",
+ "libc",
+ "png",
+ "serde",
+ "sys-locale",
+ "toml",
+ "windows",
+ "winresource",
+ "x11rb",
+]
 
 [[package]]
 name = "vello_common"

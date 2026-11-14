@@ -29,30 +29,35 @@ fn socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
 }
 
 #[cfg(unix)]
-fn legacy_socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
-    platform::legacy_socket_path().to_fs_name::<GenericFilePath>()
+fn legacy_socket_names() -> Vec<interprocess::local_socket::Name<'static>> {
+    platform::legacy_socket_paths()
+        .into_iter()
+        .filter_map(|path| path.to_fs_name::<GenericFilePath>().ok())
+        .collect()
 }
 
 #[cfg(windows)]
-fn legacy_socket_name() -> io::Result<interprocess::local_socket::Name<'static>> {
-    platform::legacy_pipe_name().to_ns_name::<GenericNamespaced>()
+fn legacy_socket_names() -> Vec<interprocess::local_socket::Name<'static>> {
+    platform::legacy_pipe_names()
+        .into_iter()
+        .filter_map(|name| name.to_ns_name::<GenericNamespaced>().ok())
+        .collect()
 }
 
-/// Ask a daemon from the pre-rename version to quit. The old and new
-/// versions use different sockets, so without this both could press the mouse.
+/// Ask a daemon from a pre-rename version to quit. The old and new versions
+/// use different sockets, so without this both could press the mouse.
 pub fn quit_legacy_daemon() {
-    let Ok(name) = legacy_socket_name() else {
-        return;
-    };
-    let Ok(mut stream) = Stream::connect(name) else {
-        return;
-    };
-    let _ = stream.set_recv_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_send_timeout(Some(Duration::from_millis(500)));
-    let _ = writeln!(stream, "QUIT");
-    let _ = stream.flush();
-    let mut response = String::new();
-    let _ = stream.read_to_string(&mut response);
+    for name in legacy_socket_names() {
+        let Ok(mut stream) = Stream::connect(name) else {
+            continue;
+        };
+        let _ = stream.set_recv_timeout(Some(Duration::from_millis(500)));
+        let _ = stream.set_send_timeout(Some(Duration::from_millis(500)));
+        let _ = writeln!(stream, "QUIT");
+        let _ = stream.flush();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+    }
 }
 
 pub fn create_listener() -> io::Result<Listener> {
@@ -82,7 +87,7 @@ pub fn connect() -> io::Result<Stream> {
 }
 
 pub fn send(command: &str) -> Result<String> {
-    let mut stream = connect().context("failed to connect to the SAVV-AutoClicker daemon")?;
+    let mut stream = connect().context("failed to connect to the V-AutoClicker daemon")?;
     // Unix-domain sockets support timeouts; named pipes currently ignore
     // them, but keeping the call best-effort still protects the common path
     // from a wedged daemon.
@@ -136,7 +141,7 @@ pub fn send_or_spawn_with_hotkeys(
         args.push(String::from("--hold-hotkey"));
         args.push(hold_hotkey.to_string());
     }
-    platform::spawn_daemon(&args).context("failed to start the SAVV-AutoClicker daemon")?;
+    platform::spawn_daemon(&args).context("failed to start the V-AutoClicker daemon")?;
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut last_error = None;
@@ -155,7 +160,7 @@ pub fn send_or_spawn_with_hotkeys(
         .map(|error| format!("{error:#}"))
         .unwrap_or_else(|| "timed out".to_string());
     bail!(
-        "the daemon did not become ready ({detail}); run `savv-autoclicker daemon` in a terminal to see the error"
+        "the daemon did not become ready ({detail}); run `v-autoclicker daemon` in a terminal to see the error"
     )
 }
 
@@ -170,7 +175,7 @@ pub fn serve(listener: Listener, shared: Arc<SharedState>) {
                 let shared = shared.clone();
                 thread::spawn(move || {
                     if let Err(error) = handle(stream, &shared) {
-                        eprintln!("savv-autoclicker: ipc error: {error:#}");
+                        eprintln!("v-autoclicker: ipc error: {error:#}");
                     }
                 });
             }
@@ -179,7 +184,7 @@ pub fn serve(listener: Listener, shared: Arc<SharedState>) {
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => {
-                eprintln!("savv-autoclicker: ipc accept error: {error}");
+                eprintln!("v-autoclicker: ipc accept error: {error}");
                 thread::sleep(Duration::from_millis(50));
             }
         }

@@ -1,5 +1,5 @@
 fn main() {
-    println!("cargo:rerun-if-changed=assets/icon/savv-autoclicker.ico");
+    println!("cargo:rerun-if-changed=assets/icon/v-autoclicker.ico");
 
     // `cfg(windows)` in a build script describes the host that runs the
     // script, so inspect the actual compilation target instead. This keeps
@@ -9,10 +9,10 @@ fn main() {
     }
 
     let mut resource = winresource::WindowsResource::new();
-    resource.set_icon("assets/icon/savv-autoclicker.ico");
-    resource.set("ProductName", "SAVV-AutoClicker");
-    resource.set("FileDescription", "SAVV-AutoClicker");
-    resource.set("OriginalFilename", "savv-autoclicker.exe");
+    resource.set_icon("assets/icon/v-autoclicker.ico");
+    resource.set("ProductName", "V-AutoClicker");
+    resource.set("FileDescription", "V-AutoClicker");
+    resource.set("OriginalFilename", "v-autoclicker.exe");
 
     // Cross-compilation hosts may not have a resource compiler installed.
     // A missing icon must not break the rest of the build.
