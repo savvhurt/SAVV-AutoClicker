@@ -14,7 +14,7 @@
 
 # V-AutoClicker
 
-**A fast, minimal autoclicker for Windows and Linux.**<br>
+**A fast, minimal, lightweight autoclicker written on Rust for Windows and Linux.**<br>
 Native input, four click modes, twelve themes, one small binary.
 
 [Download](https://github.com/savvhurt/V-AutoClicker/releases/latest) ·
@@ -254,18 +254,6 @@ cargo xwin build --release --features gui --target x86_64-pc-windows-msvc
 
 The result is
 `target/x86_64-pc-windows-msvc/release/v-autoclicker.exe`.
-
-## Development
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo xwin check --all-targets --all-features --target x86_64-pc-windows-msvc
-```
-
-CI runs format, clippy, tests and a release build on Linux and Windows.
-Releases are built by `.github/workflows/release.yml` from `v*` tags.
 
 ## How it works
 
